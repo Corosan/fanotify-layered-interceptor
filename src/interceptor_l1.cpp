@@ -605,7 +605,6 @@ void interceptor_l1_impl::request_update_masks_async(::ino_t mnt_ns_id, void* ct
     if (it == m_namespaces.end())
         return;
 
-    auto& ns_data = it->second;
     auto& ids = it->second.m_ask_client_cb_ids;
 
     ids.erase(remove_if(ids.begin(), ids.end(),
@@ -948,13 +947,14 @@ void interceptor_l1_impl::read_fanotify(void* ctx, const mnt_namespace& ns_data)
             items = static_cast<int>(res / sizeof(ev[0]));
         }
 
-        // Short-cut for this process - all fs activities permitted
+        // Short-cut for this process - all permission-related fs activities are permitted
         if (ev[pos].pid == g_this_pid) {
             if (ev[pos].mask & (FAN_ACCESS_PERM | FAN_OPEN_PERM | FAN_OPEN_EXEC_PERM)) {
                 ::fanotify_response res = {ev[pos].fd, FAN_ALLOW};
                 std::ignore = ::write(ns_data.m_fan_fd.handle(), &res, sizeof(res));
-                ::close(ev[pos].fd);
             }
+            if (ev[pos].fd != FAN_NOFD)
+                ::close(ev[pos].fd);
             continue;
         }
 

@@ -13,6 +13,7 @@ add_library(fan-interceptor OBJECT
     src/utils.cpp)
 
 target_include_directories(fan-interceptor INTERFACE src)
+target_compile_options(fan-interceptor PRIVATE -Wall)
 
 add_executable(iceptor-tester src/iceptor-tester.cpp)
 target_link_libraries(iceptor-tester fan-interceptor)

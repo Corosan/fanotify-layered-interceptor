@@ -66,30 +66,33 @@ mu_interceptor_impl::fs_event_for_subscription_impl::fs_event_for_subscription_i
         subscription& s,
         bool verdict_should_be_posted,
         std::optional<l2_cache::rce> r) noexcept
-    : m_state{&parent, &s, parent.m_event_type}
+    : m_parent_event{parent}
+    , m_subscription{s}
+    , m_event_type{parent.m_event_type}
+    , m_verdict_should_be_posted{verdict_should_be_posted}
     , m_cache_entry(std::move(r)) {
-    atomic_init(&m_state.m_ref, 0);
-    atomic_init(&m_state.m_verdict_should_be_posted, verdict_should_be_posted);
 
     const std::uint32_t orig_requested_event_types = s.is_cache_enabled()
         ? l2_cache::get_orig_requested_event_types(s.m_cache_rce_storage)
         : s.get_requested_event_types();
 
-    // It can be blocking event being processed now but the subscriber wanted an
+    // To tell the truth, a type of this particular event is stored in parent
+    // fs_event_impl object. Why to store it here additionally? Well, ...
+    // it can be blocking event being processed now but the subscriber wanted an
     // unblocking event - let's respect its expectations. Prepare an event type
-    // visible for the subscriber.
-    switch (m_state.m_event_type) {
+    // visible for the subscriber here in this event-for-subscription object.
+    switch (m_event_type) {
     case fs_event_type::open_perm:
         if (orig_requested_event_types & (std::uint32_t)fs_event_type::open)
-            m_state.m_event_type = fs_event_type::open;
+            m_event_type = fs_event_type::open;
         break;
     case fs_event_type::open_exec_perm:
         if (orig_requested_event_types & (std::uint32_t)fs_event_type::open_exec)
-            m_state.m_event_type = fs_event_type::open_exec;
+            m_event_type = fs_event_type::open_exec;
         break;
     case fs_event_type::access_perm:
         if (orig_requested_event_types & (std::uint32_t)fs_event_type::access)
-            m_state.m_event_type = fs_event_type::access;
+            m_event_type = fs_event_type::access;
         break;
     default:
         break;
@@ -98,26 +101,30 @@ mu_interceptor_impl::fs_event_for_subscription_impl::fs_event_for_subscription_i
 
 mu_interceptor_impl::fs_event_for_subscription_impl::fs_event_for_subscription_impl(
         fs_event_for_subscription_impl&& r) noexcept
-    : m_cache_entry(std::move(r.m_cache_entry)) {
-    static_assert(std::is_trivially_copyable<pod_data>::value);
-    std::memcpy(&m_state, &r.m_state, sizeof(m_state));
+    : m_parent_event{r.m_parent_event}
+    , m_subscription{r.m_subscription}
+    , m_event_type{r.m_event_type}
+    , m_cache_entry{std::move(r.m_cache_entry)}{
+    m_ref.store(r.m_ref.load(std::memory_order_relaxed), std::memory_order_relaxed);
+    m_verdict_should_be_posted.store(
+        r.m_verdict_should_be_posted.load(std::memory_order_relaxed), std::memory_order_relaxed);
 }
 
 void mu_interceptor_impl::fs_event_for_subscription_impl::post_verdict(verdict v, bool cache_it) {
-    if (m_state.m_verdict_should_be_posted.exchange(false, std::memory_order_relaxed)) {
-        m_state.m_parent->post_verdict(v, {});
+    if (m_verdict_should_be_posted.exchange(false, std::memory_order_relaxed)) {
+        m_parent_event.post_verdict(v, {});
         if (cache_it && m_cache_entry)
             m_cache_entry->set_verdict(v);
     }
 }
 
 void mu_interceptor_impl::fs_event_for_subscription_impl::release() noexcept {
-    if (m_state.m_ref.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+    if (m_ref.fetch_sub(1, std::memory_order_acq_rel) == 1) {
         post_verdict(verdict::allow, /*cache it*/ false);
         m_cache_entry.reset();
-        if (m_state.m_subscription->finished_to_use())
-            m_state.m_parent->finish_with_subscription(*m_state.m_subscription);
-        m_state.m_parent->release();
+        if (m_subscription.finished_to_use())
+            m_parent_event.finish_with_subscription(m_subscription);
+        m_parent_event.release();
     }
 }
 
@@ -266,9 +273,9 @@ mu_interceptor_impl::mu_interceptor_impl(
         std::unique_ptr<interceptor_l1> layer1,
         std::shared_ptr<utils::trivial_timer> service_timer)
     : m_params(params)
-    , m_layer1(std::move(layer1))
     , m_service_timer(std::move(service_timer))
-    , m_l2_cache(m_params.m_delay_fd_on_close) {
+    , m_l2_cache(m_params.m_delay_fd_on_close)
+    , m_layer1(std::move(layer1)) {
     m_layer1->set_client(this);
 
     TRACE_L2_INFO() << "created";
@@ -998,8 +1005,7 @@ void mu_interceptor_impl::on_fs_event(void* ctx, l1_fs_event&& event) noexcept {
                             continue;
                     }
 
-                    auto& receiver = l2_event->add_receiver(
-                        s, need_to_post_verdict, std::move(cache_rec_entry));
+                    l2_event->add_receiver(s, need_to_post_verdict, std::move(cache_rec_entry));
                 }
 
                 // An intrusive pointer is created for every receiver and the subscription's
@@ -1037,6 +1043,7 @@ void mu_interceptor_impl::on_fs_event(void* ctx, l1_fs_event&& event) noexcept {
             for (auto& [receiver, ptr] : l2_event->get_receivers()) {
                 ++s_executing_on_thread;
                 bool need_to_finalize = false;
+
                 try {
                     if (ptr) {
                         need_to_finalize = true;
@@ -1046,7 +1053,12 @@ void mu_interceptor_impl::on_fs_event(void* ctx, l1_fs_event&& event) noexcept {
                     TRACE_L2_ERROR() << "catched unexpected exception on calling subscriber '"
                         << receiver.client_name() << "' for event id=" << event.m_event_id
                         << ", type " << ev_type << ": " << utils::dump_exc_with_nested(e);
+                } catch (...) {
+                    TRACE_L2_ERROR() << "catched unexpected exception on calling subscriber '"
+                        << receiver.client_name() << "' for event id=" << event.m_event_id
+                        << ", type " << ev_type;
                 }
+
                 if (need_to_finalize)
                     receiver.finished_calling_client();
                 --s_executing_on_thread;

@@ -55,16 +55,11 @@ class mu_interceptor_impl : public mu_interceptor, interceptor_l1::l1_client {
 
     // An event view for one particular subscriber which is selected for delivering an event
     class fs_event_for_subscription_impl final : public fs_event {
-        // Trivial payload of this object which can be copied with memcpy (see comment for copy
-        // constructor below)
-        struct pod_data {
-            fs_event_impl* m_parent;
-            subscription* m_subscription;
-            fs_event_type m_event_type;
-            std::atomic<int> m_ref;
-            std::atomic<bool> m_verdict_should_be_posted;
-        } m_state;
-
+        fs_event_impl& m_parent_event;
+        subscription& m_subscription;
+        fs_event_type m_event_type;
+        std::atomic<int> m_ref{0};
+        std::atomic<bool> m_verdict_should_be_posted;
         std::optional<l2_cache::rce> m_cache_entry;
 
     public:
@@ -74,7 +69,7 @@ class mu_interceptor_impl : public mu_interceptor, interceptor_l1::l1_client {
             bool verdict_should_be_posted,
             std::optional<l2_cache::rce> r) noexcept;
 
-        // A set of these objects represending all related subscribers are stored in a vector by
+        // A bunch of these objects represending all related subscribers are stored in a vector by
         // value. Storing in a vector requires us to be able to copy (move) items being stored.
         // Default copy (move) constructor is deleted due to inability to copy atomic objects.
         // Though we don't plan to copy this object during active phase of event processing, but
@@ -85,30 +80,30 @@ class mu_interceptor_impl : public mu_interceptor, interceptor_l1::l1_client {
         fs_event_for_subscription_impl(fs_event_for_subscription_impl&& r) noexcept;
 
         bool is_verdict_expected() const noexcept {
-            return m_state.m_verdict_should_be_posted.load(std::memory_order_relaxed);
+            return m_verdict_should_be_posted.load(std::memory_order_relaxed);
         }
 
         // Atomically increments a usage counter on associated subscription if the latter is not
         // marked for deletion, returns status whether it can be used.
         bool try_mark_subscription_used() noexcept {
-            return m_state.m_subscription->try_mark_used();
+            return m_subscription.try_mark_used();
         }
 
         void call_client(fs_event_ptr&& event) const {
-            m_state.m_subscription->call_client(std::move(event));
+            m_subscription.call_client(std::move(event));
         }
 
         void finished_calling_client() const {
-            if (m_state.m_subscription->finished_calling_client_check_last())
-                m_state.m_parent->finish_with_subscription(*m_state.m_subscription);
+            if (m_subscription.finished_calling_client_check_last())
+                m_parent_event.finish_with_subscription(m_subscription);
         }
 
         std::string_view client_name() const {
-            return m_state.m_subscription->get_client_name();
+            return m_subscription.get_client_name();
         }
 
         void add_ref() noexcept override {
-            m_state.m_ref.fetch_add(1, std::memory_order_relaxed);
+            m_ref.fetch_add(1, std::memory_order_relaxed);
         }
 
         void release() noexcept override;
@@ -116,15 +111,19 @@ class mu_interceptor_impl : public mu_interceptor, interceptor_l1::l1_client {
         // fs_event interface implementation - a part observable by an external code
         //
 
-        fs_event_type type() const override { return m_state.m_event_type; }
-        int fd() const override { return m_state.m_parent->m_fd.handle(); }
-        ::pid_t pid() const override { return m_state.m_parent->m_pid; }
-        ::ino_t mnt_ns_id() const override { return m_state.m_parent->m_mnt_ns_id; }
-        // int mnt_id() const override { return m_state.m_parent->m_mount_id; }
-        const char* path() const override { return m_state.m_parent->m_path.c_str(); }
+        fs_event_type type() const override { return m_event_type; }
+        int fd() const override { return m_parent_event.m_fd.handle(); }
+        ::pid_t pid() const override { return m_parent_event.m_pid; }
+        ::ino_t mnt_ns_id() const override { return m_parent_event.m_mnt_ns_id; }
+        // int mnt_id() const override { return m_state.m_parent_event->m_mount_id; }
+        const char* path() const override { return m_parent_event.m_path.c_str(); }
         void post_verdict(verdict v, bool cache_it) override;
     };
 
+    // The object of this class represents internal state for every filesystem event coming from
+    // Layer 1. These objects are not created/destroyed for every signal from the Layer 1, they are
+    // reused instead. The final point before considering the object as released and ready to be put
+    // into a cache for future usage is a call to its "release" method.
     class fs_event_impl {
     public:
         typedef std::vector<std::pair<fs_event_for_subscription_impl, fs_event_ptr>>
@@ -380,12 +379,25 @@ class mu_interceptor_impl : public mu_interceptor, interceptor_l1::l1_client {
 
         static_assert(sizeof(unsigned) >= 4);
 
+        // The subscription object is marked for deletion in the near future. It shouldn't be used
+        // for delivering events. The flag is set by 'unsubscribe' action directly or indirectly.
         static constexpr unsigned STATE_PENDING_DELETED     = 0x80000000;
+
         static constexpr unsigned STATE_NEED_NOTIFY         = 0x40000000;
         static constexpr unsigned STATE_FROM_WORKING_THREAD = 0x20000000;
         static constexpr unsigned STATE_CONTROL_MASK        = 0xE0000000;
+
+        // A mask and a counter for counting how many threads delivering events right now which are
+        // linked to this subscription object. "Delivering" means calling user code via a callback.
+        // One event (or more preciselly - event view for the subscription) can be delivered in the
+        // only thread, but a few different events can be processed by different threads.
         static constexpr unsigned STATE_THREAD_COUNTER_MASK = 0x1F800000;
         static constexpr unsigned STATE_THREAD_COUNTER_INC  = 0x00800000;
+
+        // A mask and a counter for counting references to this subscription object from an fs event
+        // wrapper seen from the external world. One fs event is counted only once here, it doesn't
+        // matter how many copies of a user-visible pointer (fs_event_ptr type) exist. All of they
+        // are counted by their own counter fs_event_for_subscription_impl::m_ref.
         static constexpr unsigned STATE_USAGE_COUNTER_MASK  = 0x007FFFFF;
         static constexpr unsigned STATE_USAGE_COUNTER_INC   = 0x00000001;
         std::atomic<unsigned> m_state;
