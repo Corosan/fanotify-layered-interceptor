@@ -139,7 +139,7 @@ TEST(Layer2, SubscribeUnsubscribe) {
     StrictMock<subscriber_mock> subscr;
 
     EXPECT_CALL(*l1_m_ptr, set_client).WillOnce(SaveArg<0>(&l1_c));
-    EXPECT_CALL(*l1_m_ptr, request_update_masks).WillRepeatedly([&l1_c](auto a1, auto ctx){
+    EXPECT_CALL(*l1_m_ptr, request_update_masks).WillRepeatedly([&l1_c](auto, auto ctx){
             l1_c->update_masks_done(ctx);
         });
 
@@ -1089,7 +1089,7 @@ TEST(Layer2, Cache) {
 
     EXPECT_CALL(*l1_m_ptr, request_update_masks)
         .Times(2)
-        .WillRepeatedly([l1_c, &mask_setter](auto opt_mnt_id, void* ctx){
+        .WillRepeatedly([l1_c](auto opt_mnt_id, void* ctx){
             l1_c->update_masks_done(ctx);
         });
     iceptor.subscribe(subscr1, {(std::uint32_t)fs_event_type::open_perm});
@@ -1180,13 +1180,75 @@ TEST(Layer2, Cache) {
     iceptor.stop();
 }
 
-// Further scenarios:
-//   + different subscribers for different mount points
-//   + blocking and unblocking subscribers for the same event
-//   + right selection of interesting mount points for a subscriber when mount point picture changes
-//   + subscribing / unsubscribing from callback
-//   + unsubscribing while still processing an event
-//   + stopping thread while processing an event - nursing home
-//   * a few threads handling an event stream
+// A subscription being deleted can be used concurently:
+// 1. 'unsubscribe' is called
+// 2. a specified subscription is marked with PENDING_DELETED flag. There is one outstanding
+//    pointer P1 to an event referencing this subscription.
+// 3. a lock around a subscriptions list is released
+// 4. while the 'unsubscribe' sequence modifies fanotify masks via request_update_masks call
+//    to L1, somebody releases P1. It yields to zero usage counter in a subscription object
+//    and removing the latter consequently.
+//
+// This test has been added to check this scenario after the usage counter has been also used
+// to lock the subscription object from deleting.
+TEST(Layer2, UnsubscribeAndReleaseEventConcurrently) {
+    using namespace ::testing;
+
+    l1_mock* l1_m_ptr = nullptr;
+    interceptor_l1::l1_client* l1_c = nullptr;
+    auto l1_m = std::make_unique<StrictMock<l1_mock>>(&l1_m_ptr);
+
+    StrictMock<subscriber_mock> subscr;
+    StrictMock<MockFunction<interceptor_l1::l1_client::mask_setter_t>> mask_setter;
+
+    EXPECT_CALL(*l1_m_ptr, set_client).WillOnce(SaveArg<0>(&l1_c));
+
+    mu_interceptor_impl iceptor{
+        g_common_l2_params,
+        std::move(l1_m),
+        std::make_unique<StrictMock<trivial_timer_mock>>()};
+
+    EXPECT_CALL(*l1_m_ptr, request_update_masks)
+        .WillOnce([l1_c](auto, auto ctx){
+            l1_c->update_masks_done(ctx);
+        });
+
+    iceptor.subscribe(subscr, {(std::uint32_t)fs_event_type::open});
+
+    void* thread_ctx = nullptr;
+    EXPECT_CALL(*l1_m_ptr, start).WillOnce([&l1_c, &thread_ctx]{ l1_c->thread_started(&thread_ctx); });
+    iceptor.start();
+
+    EXPECT_CALL(mask_setter, Call(10, (std::uint32_t)fs_event_type::open));
+    l1_c->on_mount(/*nsid*/ 152, /*dev_id*/ 1, /*mount_id*/ 10, "/", mask_setter.AsStdFunction());
+    l1_c->mount_changes_done(/*nsid*/ 152, mask_setter.AsStdFunction(), false);
+
+    fs_event_ptr ev_ptr;
+    EXPECT_CALL(subscr, on_fs_event(_)).WillOnce([&ev_ptr](auto p){ ev_ptr = p; });
+
+    l1_c->on_fs_event(thread_ctx, l1_fs_event{
+        (std::uint32_t)fs_event_type::open,
+        fd_holder{::open("/proc/self/exe", O_RDONLY)},
+        1,
+        152,
+        1000});
+
+    EXPECT_CALL(mask_setter, Call(10, 0));
+    EXPECT_CALL(*l1_m_ptr, request_update_masks)
+        .WillOnce([l1_c, &ev_ptr, &mask_setter](auto, auto ctx){
+            ev_ptr = {};
+            l1_c->update_masks(/*nsid*/ 152, ctx, mask_setter.AsStdFunction());
+            l1_c->update_masks_done(ctx);
+        });
+
+    iceptor.unsubscribe(subscr);
+
+    EXPECT_CALL(*l1_m_ptr, stop).WillOnce([&l1_c, &thread_ctx, &mask_setter]{
+        l1_c->on_umount(/*nsid*/ 152, /*dev_id*/ 1, /*mount_id*/ 10, "/", mask_setter.AsStdFunction());
+        l1_c->mount_changes_done(/*nsid*/ 152, mask_setter.AsStdFunction(), true);
+        l1_c->thread_finishing(thread_ctx);
+    });
+    iceptor.stop();
+}
 
 } // ns anonymous

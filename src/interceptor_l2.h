@@ -333,8 +333,14 @@ class mu_interceptor_impl : public mu_interceptor, interceptor_l1::l1_client {
         // pending deleted and it's not used anymore by a delivery event cycle
         bool finished_to_use();
 
-        bool mark_for_deletion_check_client_not_called(
-            bool is_in_work_thread, bool& can_delete_now) noexcept;
+        // Called by unsubscribe sequence - raises PENDING_DELETED flag and increments USAGE counter
+        // to prohibit unexpected deletion of this object
+        void mark_for_deletion_and_lock(bool is_from_cb_handler_thread) noexcept;
+
+        // return {true} if the subscription object can be deleted by the caller of this method
+        bool unlock_marked_for_deletion() noexcept;
+
+        bool are_no_events_delivered(bool is_from_cb_handler_thread) noexcept;
 
         void call_client(fs_event_ptr&& event) {
             m_state.fetch_add(STATE_THREAD_COUNTER_INC, std::memory_order_relaxed);
@@ -381,25 +387,25 @@ class mu_interceptor_impl : public mu_interceptor, interceptor_l1::l1_client {
 
         // The subscription object is marked for deletion in the near future. It shouldn't be used
         // for delivering events. The flag is set by 'unsubscribe' action directly or indirectly.
-        static constexpr unsigned STATE_PENDING_DELETED     = 0x80000000;
+        static constexpr unsigned STATE_PENDING_DELETED                 = 0x80000000;
 
-        static constexpr unsigned STATE_NEED_NOTIFY         = 0x40000000;
-        static constexpr unsigned STATE_FROM_WORKING_THREAD = 0x20000000;
-        static constexpr unsigned STATE_CONTROL_MASK        = 0xE0000000;
+        static constexpr unsigned STATE_NEED_NOTIFY                     = 0x40000000;
+        static constexpr unsigned STATE_DELETE_RQ_FROM_WORKING_THREAD   = 0x20000000;
+        static constexpr unsigned STATE_CONTROL_MASK                    = 0xE0000000;
 
         // A mask and a counter for counting how many threads delivering events right now which are
         // linked to this subscription object. "Delivering" means calling user code via a callback.
         // One event (or more preciselly - event view for the subscription) can be delivered in the
         // only thread, but a few different events can be processed by different threads.
-        static constexpr unsigned STATE_THREAD_COUNTER_MASK = 0x1F800000;
-        static constexpr unsigned STATE_THREAD_COUNTER_INC  = 0x00800000;
+        static constexpr unsigned STATE_THREAD_COUNTER_MASK             = 0x1F800000;
+        static constexpr unsigned STATE_THREAD_COUNTER_INC              = 0x00800000;
 
         // A mask and a counter for counting references to this subscription object from an fs event
         // wrapper seen from the external world. One fs event is counted only once here, it doesn't
         // matter how many copies of a user-visible pointer (fs_event_ptr type) exist. All of they
         // are counted by their own counter fs_event_for_subscription_impl::m_ref.
-        static constexpr unsigned STATE_USAGE_COUNTER_MASK  = 0x007FFFFF;
-        static constexpr unsigned STATE_USAGE_COUNTER_INC   = 0x00000001;
+        static constexpr unsigned STATE_USAGE_COUNTER_MASK              = 0x007FFFFF;
+        static constexpr unsigned STATE_USAGE_COUNTER_INC               = 0x00000001;
         std::atomic<unsigned> m_state;
     };
 

@@ -147,7 +147,9 @@ public:
 
     template <class> friend class intrusive_ptr;
 
-    explicit intrusive_ptr(T* obj = nullptr) noexcept
+    intrusive_ptr() = default;
+
+    explicit intrusive_ptr(T* obj) noexcept
         : m_obj(obj) {
     }
 
@@ -214,7 +216,7 @@ public:
     }
 
 private:
-    T* m_obj;
+    T* m_obj = nullptr;
 };
 
 template <typename E> class bit_flags {

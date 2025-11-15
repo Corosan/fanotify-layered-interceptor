@@ -224,46 +224,53 @@ bool mu_interceptor_impl::subscription::finished_calling_client_check_last() {
 
     if (val & STATE_NEED_NOTIFY) {
         const unsigned t_counter = val & STATE_THREAD_COUNTER_MASK;
-        if (((val & STATE_FROM_WORKING_THREAD) && t_counter == STATE_THREAD_COUNTER_INC * 2)
-            || (!(val & STATE_FROM_WORKING_THREAD) && t_counter == STATE_THREAD_COUNTER_INC)) {
+        if (((val & STATE_DELETE_RQ_FROM_WORKING_THREAD) && t_counter == STATE_THREAD_COUNTER_INC * 2)
+            || (!(val & STATE_DELETE_RQ_FROM_WORKING_THREAD) && t_counter == STATE_THREAD_COUNTER_INC)) {
             m_mutex.lock();
             m_mutex.unlock();
             m_cv.notify_all();
         }
     }
 
+    // So, {true} is returned only if an 'unsubscribe' sequence has been executed, it was executed
+    // from a working thread calling a user callback, no references exist on this subscription
+    // object and no other outstanding events in other threads are delivered to clients.
     return (val & STATE_PENDING_DELETED)
-        && (val & STATE_FROM_WORKING_THREAD)
+        && (val & STATE_DELETE_RQ_FROM_WORKING_THREAD)
         && (val & STATE_USAGE_COUNTER_MASK) == 0
         && (val & STATE_THREAD_COUNTER_MASK) == STATE_THREAD_COUNTER_INC;
 }
 
-bool mu_interceptor_impl::subscription::mark_for_deletion_check_client_not_called(
-    bool is_in_work_thread, bool& can_delete_now) noexcept {
+void mu_interceptor_impl::subscription::mark_for_deletion_and_lock(
+        bool is_from_cb_handler_thread) noexcept {
+    // Though USAGE_COUNTER is originally used by extern fs event wrappers, we use it here also to
+    // add a lock so nobody removes the subscription object until the 'unsubscribe' sequence
+    // finishes with it.
     unsigned state, new_state;
+    m_state.fetch_add(STATE_USAGE_COUNTER_INC, std::memory_order_relaxed);
     do {
         state = m_state.load(std::memory_order_relaxed);
-        if ((state & STATE_PENDING_DELETED)
-            && (state & STATE_THREAD_COUNTER_MASK) == (is_in_work_thread ? STATE_THREAD_COUNTER_INC : 0)) {
-            // If nobody (a subscriber) holds a pointer to its view of the event and this method is
-            // called not in a context of worked thread and no other worker threads can reference to
-            // this subscription... hmm... it can be removed then.
-            if ((state & STATE_USAGE_COUNTER_MASK) == 0 && ! is_in_work_thread)
-                can_delete_now = true;
-            return true;
+        new_state = state | STATE_PENDING_DELETED;
+        if ((state & STATE_THREAD_COUNTER_MASK)
+            != (is_from_cb_handler_thread ? STATE_THREAD_COUNTER_INC : 0)) {
+            new_state |= STATE_NEED_NOTIFY;
+            new_state |= is_from_cb_handler_thread ? STATE_DELETE_RQ_FROM_WORKING_THREAD : 0;
         }
+    } while (! m_state.compare_exchange_weak(state, new_state, std::memory_order_relaxed));
+}
 
-        new_state = state | subscription::STATE_PENDING_DELETED
-             | subscription::STATE_NEED_NOTIFY;
+bool mu_interceptor_impl::subscription::are_no_events_delivered(bool is_from_cb_handler_thread) noexcept {
+    return
+        (m_state.load(std::memory_order_relaxed) & STATE_THREAD_COUNTER_MASK)
+        == (is_from_cb_handler_thread ? STATE_THREAD_COUNTER_INC : 0);
+}
 
-        if (is_in_work_thread)
-            new_state = new_state | subscription::STATE_FROM_WORKING_THREAD;
+bool mu_interceptor_impl::subscription::unlock_marked_for_deletion() noexcept {
+    const auto state = m_state.fetch_sub(STATE_USAGE_COUNTER_INC, std::memory_order_relaxed);
 
-        if ((new_state & STATE_CONTROL_MASK) == (state & STATE_CONTROL_MASK))
-            return false;
-
-        m_state.compare_exchange_weak(state, new_state, std::memory_order_relaxed);
-    } while (true);
+    return (state & STATE_USAGE_COUNTER_MASK) == STATE_USAGE_COUNTER_INC
+        && !(state & STATE_DELETE_RQ_FROM_WORKING_THREAD)
+        && (state & STATE_THREAD_COUNTER_MASK) == 0;
 }
 
 //-------------------------------------
@@ -396,7 +403,6 @@ bool mu_interceptor_impl::unsubscribe(mu_subscriber& subscriber) {
     // threads, an iterator to a subscription shouldn't be invalidated even between locked parts of
     // the code.
     subscription_list_t::iterator subscr_it;
-    bool delete_here = false;
 
     TRACE_L2_INFO() << "removes a subscription "
         << (void*)&subscriber << " \"" << subscriber.name() << "\"";
@@ -414,10 +420,11 @@ bool mu_interceptor_impl::unsubscribe(mu_subscriber& subscriber) {
         const bool on_work_thread = s_executing_on_thread > 0;
         std::unique_lock l{subscr_it->m_mutex};
 
+        subscr_it->mark_for_deletion_and_lock(on_work_thread);
+
         subscr_it->m_cv.wait(l,
-            [&subscr_it, on_work_thread, &delete_here](){
-                return subscr_it->mark_for_deletion_check_client_not_called(
-                    on_work_thread, delete_here);
+            [&subscr_it, on_work_thread](){
+                return subscr_it->are_no_events_delivered(on_work_thread);
             }
         );
     }
@@ -449,6 +456,8 @@ bool mu_interceptor_impl::unsubscribe(mu_subscriber& subscriber) {
                 m_mnt_lock.lock();
             }
 
+            assert(! m_subscriptions.empty());
+
             for (auto& mp_ptr : m_subscription.m_bind_mountpoints[namespace_id]) {
                 bind_mountpoint_subscriber(*mp_ptr, m_subscription, /*do_bind*/ false);
                 if (mp_ptr->recalc_event_types())
@@ -469,7 +478,7 @@ bool mu_interceptor_impl::unsubscribe(mu_subscriber& subscriber) {
     if (mnt_lock)
         mnt_lock.unlock();
 
-    if (delete_here) {
+    if (subscr_it->unlock_marked_for_deletion()) {
         if (! subscr_lock)
             subscr_lock.lock();
 
