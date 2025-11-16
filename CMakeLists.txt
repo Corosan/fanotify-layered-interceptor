@@ -21,6 +21,7 @@ target_link_libraries(iceptor-tester fan-interceptor)
 enable_testing()
 add_executable(unit-tests test/basic-tests.cpp test/layer2.cpp test/cache.cpp)
 target_link_libraries(unit-tests GTest::gtest_main gmock fan-interceptor)
+target_compile_options(unit-tests PRIVATE -Wall)
 
 include(GoogleTest)
 gtest_discover_tests(unit-tests)

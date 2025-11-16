@@ -81,6 +81,73 @@ class trivial_timer_mock : public trivial_timer {
     MOCK_METHOD(void, cancel_all, (), (override));
 };
 
+class thread_worker final {
+public:
+    void start(interceptor_l1::l1_client *l1_c) {
+        this->l1_c = l1_c;
+        runner = std::thread{[this]{ run(); }};
+    }
+
+    void stop() {
+        put_cmd(cmd_quit{});
+        runner.join();
+    }
+
+    void exec_async(std::function<void()> f) {
+        put_cmd(cmd_func{std::move(f)});
+    }
+
+    void* get_thread_ctx() const {
+        return thread_ctx;
+    }
+
+private:
+    void* thread_ctx = nullptr;
+    std::thread runner;
+    interceptor_l1::l1_client* l1_c;
+
+    struct cmd_quit {};
+    struct cmd_func { std::function<void()> f; };
+    typedef std::variant<cmd_quit, cmd_func> queue_item_t;
+
+    std::deque<queue_item_t> cmd_queue;
+    std::mutex cmd_mutex;
+    std::condition_variable cmd_cv;
+
+    queue_item_t get_cmd() {
+        std::unique_lock l{cmd_mutex};
+        queue_item_t res;
+        cmd_cv.wait(l, [&res, this]{
+            if (cmd_queue.empty())
+                return false;
+            res = std::move(cmd_queue.front());
+            cmd_queue.pop_front();
+            return true;
+        });
+        return res;
+    }
+
+    void put_cmd(queue_item_t c) {
+        std::lock_guard l{cmd_mutex};
+        cmd_queue.push_back(std::move(c));
+        cmd_cv.notify_all();
+    }
+
+    void run() {
+        l1_c->thread_started(&thread_ctx);
+
+        while (true) {
+            queue_item_t c = get_cmd();
+            if (std::get_if<cmd_quit>(&c))
+                break;
+            if (auto pv = std::get_if<cmd_func>(&c))
+                pv->f();
+        }
+
+        l1_c->thread_finishing(thread_ctx);
+    }
+};
+
 const l2_params g_common_l2_params{{}, /*delay_fd*/ false, /*print stat*/ false};
 
 
@@ -183,7 +250,6 @@ TEST(Layer2, SubscribeUnsubscribe) {
 MATCHER_P(IsSameFile, path, "") {
     struct ::stat st_path, st_in;
     if (::stat(path, &st_path) < 0) {
-        auto e = errno;
         *result_listener << "can't get stat for pattern path '" << path << '\'';
         return false;
     }
@@ -830,66 +896,7 @@ TEST(Layer2, UnsubscribeFromCallback) {
         std::move(l1_m),
         std::make_unique<StrictMock<trivial_timer_mock>>()};
 
-    struct {
-        void* thread_ctx = nullptr;
-        std::thread runner;
-        interceptor_l1::l1_client* l1_c;
-
-        struct cmd_quit {};
-        struct cmd_func { std::function<void()> f; };
-        typedef std::variant<cmd_quit, cmd_func> queue_item_t;
-
-        std::deque<queue_item_t> cmd_queue;
-        std::mutex cmd_mutex;
-        std::condition_variable cmd_cv;
-
-        void start(interceptor_l1::l1_client *l1_c) {
-            this->l1_c = l1_c;
-            runner = std::thread{[this]{ run(); }};
-        }
-
-        void stop() {
-            put_cmd(cmd_quit{});
-            runner.join();
-        }
-
-        queue_item_t get_cmd() {
-            std::unique_lock l{cmd_mutex};
-            queue_item_t res;
-            cmd_cv.wait(l, [&res, this]{
-                if (cmd_queue.empty())
-                    return false;
-                res = std::move(cmd_queue.front());
-                cmd_queue.pop_front();
-                return true;
-            });
-            return res;
-        }
-
-        void put_cmd(queue_item_t c) {
-            std::lock_guard l{cmd_mutex};
-            cmd_queue.push_back(std::move(c));
-            cmd_cv.notify_all();
-        }
-
-        void exec_async(std::function<void()> f) {
-            put_cmd(cmd_func{std::move(f)});
-        }
-
-        void run() {
-            l1_c->thread_started(&thread_ctx);
-
-            while (true) {
-                queue_item_t c = get_cmd();
-                if (std::get_if<cmd_quit>(&c))
-                    break;
-                if (auto pv = std::get_if<cmd_func>(&c))
-                    pv->f();
-            }
-
-            l1_c->thread_finishing(thread_ctx);
-        }
-    } other_worker;
+    thread_worker other_worker;
     void *this_thread_ctx = nullptr;
 
     EXPECT_CALL(*l1_m_ptr, start).WillOnce([&l1_c, &this_thread_ctx, &other_worker]{
@@ -919,7 +926,7 @@ TEST(Layer2, UnsubscribeFromCallback) {
             Pointer(Property("pid", &fs_event::pid, Eq(5))),
             Pointer(Property("mnt_ns_id", &fs_event::mnt_ns_id, Eq(152))),
             Pointer(Property("fd", &fs_event::fd, IsSameFile("/usr/bin")))
-        ))).WillOnce([&iceptor, &subscr1, &subscr3, &other_worker, &latch, &order](fs_event_ptr){
+        ))).WillOnce([&latch, &order](auto){
             latch.release();
             std::this_thread::sleep_for(std::chrono::seconds(1));
             order.fetch_add(1);
@@ -952,7 +959,7 @@ TEST(Layer2, UnsubscribeFromCallback) {
 
     latch.acquire();
     other_worker.exec_async([l1_c, &other_worker]{
-        l1_c->on_fs_event(other_worker.thread_ctx, l1_fs_event{
+        l1_c->on_fs_event(other_worker.get_thread_ctx(), l1_fs_event{
             (std::uint32_t)fs_event_type::open,
             fd_holder{::open("/usr/bin", O_RDONLY)},
             5,
@@ -1248,6 +1255,103 @@ TEST(Layer2, UnsubscribeAndReleaseEventConcurrently) {
         l1_c->mount_changes_done(/*nsid*/ 152, mask_setter.AsStdFunction(), true);
         l1_c->thread_finishing(thread_ctx);
     });
+    iceptor.stop();
+}
+
+TEST(Layer2, DependentThreadsTracking) {
+    using namespace ::testing;
+
+    l1_mock* l1_m_ptr = nullptr;
+    interceptor_l1::l1_client* l1_c = nullptr;
+    auto l1_m = std::make_unique<StrictMock<l1_mock>>(&l1_m_ptr);
+
+    StrictMock<subscriber_mock> subscr1, subscr2;
+    StrictMock<MockFunction<interceptor_l1::l1_client::mask_setter_t>> mask_setter;
+
+    EXPECT_CALL(*l1_m_ptr, set_client).WillOnce(SaveArg<0>(&l1_c));
+
+    mu_interceptor_impl iceptor{
+        g_common_l2_params,
+        std::move(l1_m),
+        std::make_unique<StrictMock<trivial_timer_mock>>()};
+
+    thread_worker w1, w2;
+    void* this_thread_ctx = nullptr;
+
+    EXPECT_CALL(*l1_m_ptr, start).WillOnce([&l1_c, &this_thread_ctx, &w1, &w2]{
+        l1_c->thread_started(&this_thread_ctx);
+        w1.start(l1_c);
+        w2.start(l1_c);
+    });
+    iceptor.start();
+
+    l1_c->on_mount(/*nsid*/ 152, /*dev_id*/ 1, /*mount_id*/ 10, "/", mask_setter.AsStdFunction());
+    l1_c->mount_changes_done(/*nsid*/ 152, mask_setter.AsStdFunction(), false);
+
+    EXPECT_CALL(*l1_m_ptr, request_update_masks)
+        .WillRepeatedly([l1_c, &mask_setter](auto, auto ctx){
+            l1_c->update_masks(152, ctx, mask_setter.AsStdFunction());
+            l1_c->update_masks_done(ctx);
+        });
+
+    EXPECT_CALL(mask_setter, Call(10, _)).Times(2);
+    iceptor.subscribe(subscr1, {(std::uint32_t)fs_event_type::open_exec});
+    iceptor.subscribe(subscr2, {(std::uint32_t)fs_event_type::open});
+
+    semaphore latch, subscr2_latch;
+    std::atomic<int> order{0};
+
+    EXPECT_CALL(subscr1, on_fs_event).WillOnce([&latch, &order](auto){
+        latch.acquire();
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+        int v = 0;
+        order.compare_exchange_strong(v, 1);
+    });
+
+    EXPECT_CALL(subscr2, on_fs_event).WillOnce([&iceptor, &subscr1, &latch, &subscr2_latch, &order](auto){
+        subscr2_latch.release();        // now subscr2 can be unsubscribed - the 'unsubscribe' must wait
+                                        // until this cb is finished
+        latch.release();
+        iceptor.unsubscribe(subscr1);   // this call must block until an event handler
+                                        // expressed in a statement above is not finished
+        int v = 1;
+        order.compare_exchange_strong(v, 2);
+    });
+
+    EXPECT_CALL(mask_setter, Call(10, _));
+    EXPECT_CALL(mask_setter, Call(10, 0));
+
+    latch.acquire();
+    subscr2_latch.acquire();
+    w2.exec_async([l1_c, &w2]{
+        l1_c->on_fs_event(w2.get_thread_ctx(), l1_fs_event{
+            (std::uint32_t)fs_event_type::open,
+            fd_holder{::open("/usr/bin", O_RDONLY)},
+            5,
+            152,
+            1000});
+    });
+
+    w1.exec_async([l1_c, &w1]{
+        l1_c->on_fs_event(w1.get_thread_ctx(), l1_fs_event{
+            (std::uint32_t)fs_event_type::open_exec,
+            fd_holder{::open("/usr/bin", O_RDONLY)},
+            5,
+            152,
+            1000});
+    });
+
+    subscr2_latch.acquire();
+    iceptor.unsubscribe(subscr2);
+    EXPECT_EQ(order.load(), 2);
+
+    EXPECT_CALL(*l1_m_ptr, stop).WillOnce([&l1_c, &this_thread_ctx, &w1, &w2, &mask_setter]{
+            l1_c->on_umount(/*nsid*/ 152, /*dev_id*/ 1, /*mount_id*/ 10, "/", mask_setter.AsStdFunction());
+            l1_c->mount_changes_done(152, mask_setter.AsStdFunction(), true);
+            l1_c->thread_finishing(this_thread_ctx);
+            w1.stop();
+            w2.stop();
+        });
     iceptor.stop();
 }
 

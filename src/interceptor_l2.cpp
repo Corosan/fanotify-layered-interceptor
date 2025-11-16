@@ -57,8 +57,6 @@ std::uint32_t calc_mask_event_types(std::uint32_t requested_event_types) {
 
 }
 
-thread_local int mu_interceptor_impl::s_executing_on_thread = 0;
-
 //------------------------------------- fs_event_for_subscription_impl
 
 mu_interceptor_impl::fs_event_for_subscription_impl::fs_event_for_subscription_impl(
@@ -220,12 +218,18 @@ bool mu_interceptor_impl::subscription::finished_to_use() {
 }
 
 bool mu_interceptor_impl::subscription::finished_calling_client_check_last() {
+    {
+        std::unique_lock l{m_referencing_thread_mutex};
+        m_referencing_threads.erase(find(
+            m_referencing_threads.begin(), m_referencing_threads.end(), std::this_thread::get_id()));
+    }
+
     const unsigned val = m_state.fetch_sub(STATE_THREAD_COUNTER_INC, std::memory_order_relaxed);
 
     if (val & STATE_NEED_NOTIFY) {
         const unsigned t_counter = val & STATE_THREAD_COUNTER_MASK;
-        if (((val & STATE_DELETE_RQ_FROM_WORKING_THREAD) && t_counter == STATE_THREAD_COUNTER_INC * 2)
-            || (!(val & STATE_DELETE_RQ_FROM_WORKING_THREAD) && t_counter == STATE_THREAD_COUNTER_INC)) {
+        if (((val & STATE_DELETE_RQ_FROM_CB_THREAD) && t_counter == STATE_THREAD_COUNTER_INC * 2)
+            || (!(val & STATE_DELETE_RQ_FROM_CB_THREAD) && t_counter == STATE_THREAD_COUNTER_INC)) {
             m_mutex.lock();
             m_mutex.unlock();
             m_cv.notify_all();
@@ -236,27 +240,30 @@ bool mu_interceptor_impl::subscription::finished_calling_client_check_last() {
     // from a working thread calling a user callback, no references exist on this subscription
     // object and no other outstanding events in other threads are delivered to clients.
     return (val & STATE_PENDING_DELETED)
-        && (val & STATE_DELETE_RQ_FROM_WORKING_THREAD)
+        && (val & STATE_DELETE_RQ_FROM_CB_THREAD)
         && (val & STATE_USAGE_COUNTER_MASK) == 0
         && (val & STATE_THREAD_COUNTER_MASK) == STATE_THREAD_COUNTER_INC;
 }
 
-void mu_interceptor_impl::subscription::mark_for_deletion_and_lock(
+bool mu_interceptor_impl::subscription::mark_for_deletion_and_lock(
         bool is_from_cb_handler_thread) noexcept {
     // Though USAGE_COUNTER is originally used by extern fs event wrappers, we use it here also to
     // add a lock so nobody removes the subscription object until the 'unsubscribe' sequence
     // finishes with it.
     unsigned state, new_state;
-    m_state.fetch_add(STATE_USAGE_COUNTER_INC, std::memory_order_relaxed);
     do {
         state = m_state.load(std::memory_order_relaxed);
+        if (state & STATE_PENDING_DELETED)
+            return false;
         new_state = state | STATE_PENDING_DELETED;
+        new_state += STATE_USAGE_COUNTER_INC;
         if ((state & STATE_THREAD_COUNTER_MASK)
             != (is_from_cb_handler_thread ? STATE_THREAD_COUNTER_INC : 0)) {
             new_state |= STATE_NEED_NOTIFY;
-            new_state |= is_from_cb_handler_thread ? STATE_DELETE_RQ_FROM_WORKING_THREAD : 0;
+            new_state |= is_from_cb_handler_thread ? STATE_DELETE_RQ_FROM_CB_THREAD : 0;
         }
     } while (! m_state.compare_exchange_weak(state, new_state, std::memory_order_relaxed));
+    return true;
 }
 
 bool mu_interceptor_impl::subscription::are_no_events_delivered(bool is_from_cb_handler_thread) noexcept {
@@ -269,8 +276,15 @@ bool mu_interceptor_impl::subscription::unlock_marked_for_deletion() noexcept {
     const auto state = m_state.fetch_sub(STATE_USAGE_COUNTER_INC, std::memory_order_relaxed);
 
     return (state & STATE_USAGE_COUNTER_MASK) == STATE_USAGE_COUNTER_INC
-        && !(state & STATE_DELETE_RQ_FROM_WORKING_THREAD)
+        && !(state & STATE_DELETE_RQ_FROM_CB_THREAD)
         && (state & STATE_THREAD_COUNTER_MASK) == 0;
+}
+
+bool mu_interceptor_impl::subscription::is_client_called_in_this_thread() const {
+    std::unique_lock l{m_referencing_thread_mutex};
+
+    return find(m_referencing_threads.begin(), m_referencing_threads.end(),
+        std::this_thread::get_id()) != m_referencing_threads.end();
 }
 
 //-------------------------------------
@@ -417,10 +431,16 @@ bool mu_interceptor_impl::unsubscribe(mu_subscriber& subscriber) {
         if (subscr_it == m_subscriptions.end())
             return false;
 
-        const bool on_work_thread = s_executing_on_thread > 0;
+        const bool on_work_thread = subscr_it->is_client_called_in_this_thread();
         std::unique_lock l{subscr_it->m_mutex};
 
-        subscr_it->mark_for_deletion_and_lock(on_work_thread);
+        if (! subscr_it->mark_for_deletion_and_lock(on_work_thread))
+            return false;
+
+        // the found subscription object can't be removed accidentally if a caller doesn't do
+        // strange things like calling 'unsubscribe' twice for the same arg (this case is checked by
+        // a statement above). So m_subscriptions can be unlocked now.
+        subscr_lock.unlock();
 
         subscr_it->m_cv.wait(l,
             [&subscr_it, on_work_thread](){
@@ -1050,7 +1070,6 @@ void mu_interceptor_impl::on_fs_event(void* ctx, l1_fs_event&& event) noexcept {
                 verdict_will_be_posted = true;
 
             for (auto& [receiver, ptr] : l2_event->get_receivers()) {
-                ++s_executing_on_thread;
                 bool need_to_finalize = false;
 
                 try {
@@ -1070,7 +1089,6 @@ void mu_interceptor_impl::on_fs_event(void* ctx, l1_fs_event&& event) noexcept {
 
                 if (need_to_finalize)
                     receiver.finished_calling_client();
-                --s_executing_on_thread;
             }
 
             // rec_unlocker will reset every not moved receiver here

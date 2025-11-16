@@ -326,9 +326,9 @@ TEST(PollingTimer, Basic) {
     EXPECT_EQ(tp_t::max(), pt.execute([](){ return tp_t{std::chrono::seconds(1)}; }));
 
     int task1_count = 0, task2_count = 0;
-    int task1_id = pt.post_single_shot_task(
+    /*task1_id = */ pt.post_single_shot_task(
         [&task1_count](){ ++task1_count; }, tp_t{std::chrono::seconds(4)});
-    int task2_id = pt.post_single_shot_task(
+    /*task2_id = */ pt.post_single_shot_task(
         [&task2_count](){ ++task2_count; }, tp_t{std::chrono::seconds(2)});
     int task3_id = pt.post_single_shot_task([](){}, tp_t{std::chrono::seconds(3)});
 
@@ -359,7 +359,7 @@ TEST(PollingTimer, RepeatTask) {
     polling_timer_executor pt{[&replan_counter](){ ++replan_counter; }};
 
     int task1_count = 0, task2_count = 0;
-    int task1_id = pt.post_single_shot_task(
+    pt.post_single_shot_task(
         [&task1_count](){ ++task1_count; }, tp_t{std::chrono::milliseconds(4500)});
 
     EXPECT_EQ(1, replan_counter);
@@ -399,8 +399,6 @@ TEST(PollingTimer, RepeatTask) {
 }
 
 TEST(ThreadTimer, Basic) {
-    typedef polling_timer_executor::time_point_t tp_t;
-
     thread_timer_executor pt;
 
     pt.start();
