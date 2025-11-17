@@ -336,6 +336,11 @@ TEST(Layer2, MultipleStartStopWithSubscriptions) {
         2,
         152,
         1000});
+
+    // Instead of proper stopping the interceptor we just signal that one (and the only) thread
+    // has been finished. It should be enough for clearing resources because all other needed
+    // cleanup actions the interceptor must do itself.
+    l1_c->thread_finishing(thread_ctx);
 }
 
 // Subscribe to one unblocking event type by one subscriber before starting
@@ -477,7 +482,7 @@ TEST(Layer2, SubscribeUnblockingBeforeStart) {
     iceptor.stop();
 
     EXPECT_CALL(*l1_m_ptr, request_update_masks(Eq(std::nullopt), _))
-        .WillOnce([l1_c, &mask_setter](auto opt_mnt_id, void* ctx){
+        .WillOnce([l1_c](auto opt_mnt_id, void* ctx){
             l1_c->update_masks_done(ctx);
         });
     EXPECT_EQ(iceptor.unsubscribe(subscrNull), true);
@@ -877,6 +882,11 @@ TEST(Layer2, RightSelectionOfMountpoints) {
     iceptor.subscribe(subscr2, {(std::uint32_t)fs_event_type::modify, "/dir1/sdir2"});
     iceptor.subscribe(subscr3, {(std::uint32_t)fs_event_type::close, "/dir1/sdir2/ggg"});
     iceptor.subscribe(subscr4, {(std::uint32_t)fs_event_type::access, "/dir1/sdir2/ssdir"});
+
+    // Instead of proper stopping the interceptor we just signal that one (and the only) thread
+    // has been finished. It should be enough for clearing resources because all other needed
+    // cleanup actions the interceptor must do itself.
+    l1_c->thread_finishing(thread_ctx);
 }
 
 TEST(Layer2, UnsubscribeFromCallback) {

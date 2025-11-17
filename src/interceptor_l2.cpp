@@ -884,7 +884,7 @@ auto mu_interceptor_impl::thread_context::allocate_event(mu_interceptor_impl& in
     }
 
     if (! res)
-        res = std::addressof(m_busy_events.emplace_back(*this, interceptor));
+        res = std::addressof(m_busy_events.emplace_back(interceptor));
 
     // One more ref for making any finalization steps before the event object will be considered
     // as free

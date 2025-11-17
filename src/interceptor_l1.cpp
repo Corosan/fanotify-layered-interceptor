@@ -614,7 +614,7 @@ void interceptor_l1_impl::request_update_masks_async(::ino_t mnt_ns_id, void* ct
     ids.push_back(m_reactor.defer([this, &ns_data = it->second, ctx](void* /* thread ctx */){
         bool need_to_update = false;
         const l1_client::mask_setter_t mask_setter =
-            [this, &need_to_update, &ns_data](int mount_id, std::uint32_t new_mask){
+            [&need_to_update, &ns_data](int mount_id, std::uint32_t new_mask){
                 if (auto it = ns_data.m_mount_list.find(mount_id); it != ns_data.m_mount_list.end()) {
                     if (it->second.m_tracking_mask != new_mask) {
                         it->second.m_new_tracking_mask = new_mask;
@@ -651,7 +651,7 @@ void interceptor_l1_impl::request_update_masks(std::optional<::ino_t> mnt_ns_id,
         auto& ns_data = it->second;
         bool need_to_update = false;
         const l1_client::mask_setter_t mask_setter =
-            [this, &need_to_update, &ns_data](int mount_id, std::uint32_t new_mask){
+            [&need_to_update, &ns_data](int mount_id, std::uint32_t new_mask){
                 if (auto it = ns_data.m_mount_list.find(mount_id); it != ns_data.m_mount_list.end()) {
                     if (it->second.m_tracking_mask != new_mask) {
                         it->second.m_new_tracking_mask = new_mask;
@@ -689,7 +689,7 @@ void interceptor_l1_impl::update_mountinfo(mnt_namespace& ns_data, bool remove_a
 
     std::unique_lock l{ns_data.m_mount_list_mutex, std::defer_lock};
 
-    const l1_client::mask_setter_t mask_setter = [this, &mount_list](int mount_id, std::uint32_t new_mask){
+    const l1_client::mask_setter_t mask_setter = [&mount_list](int mount_id, std::uint32_t new_mask){
         if (auto it = mount_list.find(mount_id); it != mount_list.end())
             it->second.m_new_tracking_mask = new_mask;
     };

@@ -51,8 +51,8 @@ namespace fan_interceptor {
 // allocated buffers) and with minimum of system calls.
 class mu_interceptor_impl : public mu_interceptor, interceptor_l1::l1_client {
     class thread_context;
-    struct subscription;
-    struct fs_event_impl;
+    class subscription;
+    class fs_event_impl;
 
     // An event view for one particular subscriber which is selected for delivering an event
     class fs_event_for_subscription_impl final : public fs_event {
@@ -131,11 +131,10 @@ class mu_interceptor_impl : public mu_interceptor, interceptor_l1::l1_client {
             receiver_and_ptr_list_t;
 
     private:
-        thread_context& m_thread_ctx;
         mu_interceptor_impl& m_interceptor;
-        std::atomic<unsigned> m_ref;
+        std::atomic<unsigned> m_ref{0};
         std::chrono::steady_clock::time_point m_last_used;
-        std::atomic<int> m_wait_for_verdict_count;
+        std::atomic<int> m_wait_for_verdict_count{0};
 
         // One of design goals is to minimize usage of memory allocator during processing each
         // event. This fs_event_impl object is reused for following events coming from layer 1. A
@@ -205,13 +204,10 @@ class mu_interceptor_impl : public mu_interceptor, interceptor_l1::l1_client {
         // so this field contains the value exclusively dedicated for sending the events.
         int m_fd_for_permission_event;
 
-        std::atomic<bool> m_is_in_nursing_home;
+        std::atomic<bool> m_is_in_nursing_home{false};
 
-        fs_event_impl(thread_context& thread_ctx, mu_interceptor_impl& interceptor)
-            : m_thread_ctx(thread_ctx), m_interceptor(interceptor) {
-            atomic_init(&m_ref, 0);
-            atomic_init(&m_wait_for_verdict_count, 0);
-            atomic_init(&m_is_in_nursing_home, false);
+        fs_event_impl(mu_interceptor_impl& interceptor) noexcept
+            : m_interceptor(interceptor) {
         }
 
         void init_verdict() noexcept { m_final_verdict = verdict::allow; }
@@ -519,7 +515,6 @@ private:
 
     std::mutex m_thread_context_mutex;
     std::vector<thread_context*> m_all_thread_contexts;
-    int m_stat_task_id = 0;
 
     int m_print_stat_task_id = 0;
 
