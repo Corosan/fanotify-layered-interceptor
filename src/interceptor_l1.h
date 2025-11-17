@@ -314,6 +314,7 @@ private:
     std::vector<std::thread> m_read_threads;
 
     std::shared_mutex m_namespace_list_mutex;
+    std::mutex m_pending_deleted_namespace_list_mutex;
     std::condition_variable_any m_namespace_list_cv;
 
     // There should be the only value for each namespace id evidently. The only reason to have

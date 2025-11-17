@@ -462,9 +462,13 @@ void interceptor_l1_impl::stop() {
 
     m_ns_detector->unsubscribe(*this);
 
-    std::shared_lock l{m_namespace_list_mutex};
-    m_namespace_list_cv.wait(l,
-        [this]{ return m_namespaces.empty() && m_pending_deleted_namespaces.empty(); });
+    std::shared_lock ns_list_lock{m_namespace_list_mutex};
+    m_namespace_list_cv.wait(ns_list_lock,
+        [this]{ return m_namespaces.empty(); });
+
+    std::unique_lock pending_deleted_ns_list_lock{m_pending_deleted_namespace_list_mutex};
+    m_namespace_list_cv.wait(pending_deleted_ns_list_lock,
+        [this]{ return m_pending_deleted_namespaces.empty(); });
 
     m_reactor.enable(false);
     for (auto& t : m_read_threads)
@@ -554,13 +558,20 @@ bool interceptor_l1_impl::add_mnt_ns_monitor(::ino_t mnt_ns_id, fd_holder root_f
 }
 
 bool interceptor_l1_impl::remove_mnt_ns_monitor(::ino_t mnt_ns_id) {
-    std::unique_lock l{m_namespace_list_mutex};
+    std::unique_lock ns_list_lock{m_namespace_list_mutex};
 
     auto it = m_namespaces.find(mnt_ns_id);
     if (it == m_namespaces.end())
         return false;
 
     TRACE_L1_INFO() << "removing mount namespace id=" << mnt_ns_id;
+
+    std::lock_guard pending_deleted_ns_list_lock{m_pending_deleted_namespace_list_mutex};
+
+    // Though the mnt_namespace entity is moved from actual known namespaces into {pending deleted}
+    // ones, the entity still has the same address so deferred handler can use it later.
+    it = m_pending_deleted_namespaces.insert(m_namespaces.extract(it));
+    ns_list_lock.unlock();
 
     auto& ns_data = it->second;
 
@@ -571,14 +582,12 @@ bool interceptor_l1_impl::remove_mnt_ns_monitor(::ino_t mnt_ns_id) {
     m_reactor.unregister_cb(ns_data.m_mounts_cb_id);
     m_reactor.unregister_cb(ns_data.m_fan_cb_id);
 
-    // Though the mnt_namespace entity is moved from actual known namespaces into {pending deleted}
-    // ones, the entity still has the same address so deferred handler can use it later.
-    it = m_pending_deleted_namespaces.insert(m_namespaces.extract(it));
-
     try {
         m_reactor.defer([this, &ns_data, it](void*){
+            // ns_data is held by "m_pending_deleted_namespaces" container and can has gone only
+            // as the result of executing {erase} operation 2 lines below.
             update_mountinfo(ns_data, /*remove_all*/ true);
-            std::lock_guard l{m_namespace_list_mutex};
+            std::lock_guard l{m_pending_deleted_namespace_list_mutex};
             m_pending_deleted_namespaces.erase(it);
             m_namespace_list_cv.notify_all();
         });
