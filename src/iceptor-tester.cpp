@@ -135,7 +135,8 @@ int intercept_dir(const intercept_dir_params& params) {
 
     std::cout << "starting interceptor with " << params.m_working_thread_count
         << " threads, cache " << (params.m_cache_on ? "on" : "off")
-        << (params.m_delay_fd_on_close ? ", delayed fds " : ", no delayed fds") << std::endl;
+        << (params.m_delay_fd_on_close ? ", delayed fds" : ", no delayed fds")
+        << (params.m_print_stat ? ", print stat" : ", no print stat") << std::endl;
 
     auto iceptor = fan_interceptor::create_mu_interceptor(
         {

@@ -477,7 +477,7 @@ public:
     std::size_t get_event_nursing_home_size() const;
 
 private:
-    const l2_params& m_params;
+    const l2_params m_params;
 
     // After working thread is destroyed, there could be a number of not-finished events which are
     // still referenced by user-visible pointers - they will be moved here

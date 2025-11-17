@@ -506,7 +506,7 @@ template <>
 struct dump_exc_with_nested<std::exception_ptr> {
     std::exception_ptr m_ptr;
 
-    explicit dump_exc_with_nested<std::exception_ptr>(std::exception_ptr p)
+    explicit dump_exc_with_nested(std::exception_ptr p)
         : m_ptr(std::move(p)) {
     }
 
@@ -692,36 +692,4 @@ private:
     underlying_t m_storage{};
 };
 
-// namespace detail
-// {
-// 
-// void enum_test_conversion(...);
-// void enum_test_conversion(int) = delete;
-// 
-// template<class E>
-// concept is_scoped_enum_impl =
-//     std::is_enum_v<E> &&
-//     requires { detail::enum_test_conversion(E{}); };
-// 
-// template<class T>
-// struct is_scoped_enum : std::bool_constant<detail::is_scoped_enum_impl<T>> {};
-// 
-// } // namespace detail
-
 } // ns fan_interceptor::utils
-
-// namespace fan_interceptor {
-// 
-// template <typename E> requires utils::detail::is_scoped_enum<E>::value
-// constexpr utils::bit_flags<E> operator|(E l, E r) noexcept
-// {
-//     return utils::bit_flags<E>{l} | r;
-// }
-// 
-// template <typename E> requires utils::detail::is_scoped_enum<E>::value
-// constexpr utils::bit_flags<E> operator~(E v) noexcept
-// {
-//     return ~utils::bit_flags<E>{v};
-// }
-// 
-// } // ns fan_interceptor
