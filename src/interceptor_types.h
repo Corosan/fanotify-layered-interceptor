@@ -443,6 +443,8 @@ struct mu_interceptor {
     // anything before. Note that it's expected that subscriber will release its event pointer
     // eventually to release internal event structure.
     virtual bool unsubscribe(mu_subscriber& subscriber) = 0;
+
+    virtual void invalidate_cache() {}
 };
 
 struct l1_params {

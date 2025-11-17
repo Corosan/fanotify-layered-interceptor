@@ -465,6 +465,9 @@ public:
 
     void subscribe(mu_subscriber& subscriber, const subscription_params& params) override;
     bool unsubscribe(mu_subscriber& subscriber) override;
+    void invalidate_cache() override {
+        m_l2_cache.invalidate();
+    }
 
     // The methods are dedicated primarily for testing... better to not have all them at all because
     // the tests should check how this code works for clients, without examining its internal state.

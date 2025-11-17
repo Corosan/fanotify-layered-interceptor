@@ -24,6 +24,7 @@
 
 #include <cstdint>
 #include <utility>
+#include <vector>
 #include <unordered_map>
 #include <mutex>
 #include <shared_mutex>
@@ -73,18 +74,13 @@ class l2_cache {
         std::atomic<int> m_del_lock_count{0};
 
         unsigned m_dev_last_change_seq_num = 0;
-        time_t m_ctime;
+        unsigned m_generation = 0;
+        time_t m_ctime = 0;
 
         utils::spin_lock m_mutex;
 
         // Per-receiver states; sorted by rec_entry_data::m_subscr_id
         receiver_entries_t m_receiver_entries;
-
-        void re_init(unsigned dev_last_change_seq_num, std::time_t ctime) {
-            m_receiver_entries.clear();
-            m_dev_last_change_seq_num = dev_last_change_seq_num;
-            m_ctime = ctime;
-        }
     };
 
     typedef std::unordered_map<key_t, file_entry_data, key_hash> entries_t;
@@ -123,7 +119,9 @@ public:
     // object.
     cache_entry get_cache_entry(dev_t dev, ino_t ino, unsigned dev_last_change_seq_num, std::time_t ctime);
 
-    bool try_remove_ce_data(key_t key, unsigned long* last_entries_ver = nullptr);
+    void invalidate() {
+        m_generation.fetch_add(1, std::memory_order_relaxed);
+    }
 
     static std::uint32_t get_orig_requested_event_types(cache_rce_storage& s) {
         return s.m_orig_requested_event_types;
@@ -135,8 +133,12 @@ private:
     // TODO: implement LRU cache with time-based priority queue.
     //       implement clearing the cache when mount point picture changes.
     entries_t m_entries;
+    std::vector<entries_t::node_type> m_entry_internal_cache;
     std::shared_mutex m_entry_mutex;
     std::atomic<unsigned long> m_entries_ver{1};
+    std::atomic<unsigned> m_generation{1};
+
+    bool remove_cache_entry(key_t key, unsigned long& current_change_version);
 };
 
 // single-threaded wrapper around multi-threaded cache entry
@@ -159,6 +161,9 @@ public:
     rce get_cache_entry_for_receiver(unsigned subscr_id, cache_rce_storage&, fs_event_type);
 
 private:
+    friend cache_entry l2_cache::get_cache_entry(dev_t, ino_t, unsigned, std::time_t);
+    friend rce;
+
     l2_cache& m_parent;
     const key_t m_key;
     const unsigned m_dev_last_change_seq_num;
@@ -181,8 +186,8 @@ private:
 
     void try_remove_binded_ce_data();
 
-    friend cache_entry l2_cache::get_cache_entry(dev_t, ino_t, unsigned, std::time_t);
-    friend rce;
+    bool is_file_entry_valid(const file_entry_data& v) const;
+    void reinit_file_entry_if_need(file_entry_data& v) const;
 };
 
 inline auto l2_cache::get_cache_entry(dev_t dev, ino_t ino, unsigned dev_last_change_seq_num, std::time_t ctime)
