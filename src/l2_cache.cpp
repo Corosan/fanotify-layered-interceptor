@@ -97,11 +97,11 @@ bool l2_cache::rce::is_verdict_ready(verdict& v) const {
         if (entry_ptr->m_ctime != m_parent_ce.m_ctime)
             return false;
 
-        auto it = std::lower_bound(entry_ptr->m_rec_entries.begin(), entry_ptr->m_rec_entries.end(),
+        auto it = std::lower_bound(entry_ptr->m_receiver_entries.begin(), entry_ptr->m_receiver_entries.end(),
             m_subscr_id, [](auto& v, unsigned id){ return v.m_subscr_id < id; });
-        if (it != entry_ptr->m_rec_entries.end()
+        if (it != entry_ptr->m_receiver_entries.end()
             && it->m_subscr_id == m_subscr_id
-            && (it->m_has_verdicts & (std::uint32_t)m_ev_type)) {
+            && (it->m_have_verdicts & m_ev_type)) {
             switch (m_ev_type) {
             case fs_event_type::open_perm: v = it->m_open_verdict; break;
             case fs_event_type::open_exec_perm: v = it->m_open_exec_verdict; break;
@@ -149,10 +149,10 @@ auto l2_cache::rce::prepare_for_work() -> action_flags_t {
                 || entry_ptr->m_ctime != m_parent_ce.m_ctime)
                 entry_ptr->re_init(m_parent_ce.m_dev_last_change_seq_num, m_parent_ce.m_ctime);
 
-            auto it = std::lower_bound(entry_ptr->m_rec_entries.begin(), entry_ptr->m_rec_entries.end(),
+            auto it = std::lower_bound(entry_ptr->m_receiver_entries.begin(), entry_ptr->m_receiver_entries.end(),
                 m_subscr_id, [](auto& v, unsigned id){ return v.m_subscr_id < id; });
-            if (it == entry_ptr->m_rec_entries.end() || it->m_subscr_id != m_subscr_id)
-                it = entry_ptr->m_rec_entries.insert(it, {m_subscr_id});
+            if (it == entry_ptr->m_receiver_entries.end() || it->m_subscr_id != m_subscr_id)
+                it = entry_ptr->m_receiver_entries.insert(it, {m_subscr_id});
         } catch (const std::bad_alloc&) {
             // In case of insufficient memory just silently skip the unablility to create either
             // the file cache entry or the particular receiver/subscriber cache entry
@@ -168,11 +168,11 @@ void l2_cache::rce::set_verdict(verdict v) {
         auto entry_ptr = &it->second;
 
         std::unique_lock l{entry_ptr->m_mutex};
-        auto it2 = std::lower_bound(entry_ptr->m_rec_entries.begin(), entry_ptr->m_rec_entries.end(),
+        auto it2 = std::lower_bound(entry_ptr->m_receiver_entries.begin(), entry_ptr->m_receiver_entries.end(),
             m_subscr_id, [](auto& v, unsigned id){ return v.m_subscr_id < id; });
 
-        if (it2 != entry_ptr->m_rec_entries.end() && it2->m_subscr_id == m_subscr_id) {
-            it2->m_has_verdicts |= (std::uint32_t)m_ev_type;
+        if (it2 != entry_ptr->m_receiver_entries.end() && it2->m_subscr_id == m_subscr_id) {
+            it2->m_have_verdicts |= m_ev_type;
             switch (m_ev_type) {
             case fs_event_type::open_perm: it2->m_open_verdict = v; break;
             case fs_event_type::open_exec_perm: it2->m_open_exec_verdict = v; break;

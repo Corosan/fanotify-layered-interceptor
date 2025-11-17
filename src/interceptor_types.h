@@ -219,50 +219,6 @@ private:
     T* m_obj = nullptr;
 };
 
-template <typename E> class bit_flags {
-    typedef typename std::underlying_type<E>::type underlying_t;
-
-public:
-    bit_flags() noexcept : m_storage{} {}
-
-    bit_flags(E v) noexcept
-        : m_storage(static_cast<underlying_t>(v)) {
-    }
-
-    bit_flags& operator &= (const bit_flags& r) noexcept {
-        m_storage &= r.m_storage;
-        return *this;
-    }
-
-    bit_flags& operator |= (const bit_flags& r) noexcept {
-        m_storage |= r.m_storage;
-        return *this;
-    }
-
-    explicit operator underlying_t() const noexcept { return m_storage; }
-    explicit operator bool() const noexcept { return m_storage; }
-
-    bit_flags operator~() const noexcept { return static_cast<E>(~m_storage); }
-
-    friend bit_flags operator & (const bit_flags& l, const bit_flags& r) noexcept {
-        return {static_cast<E>(l.m_storage & r.m_storage)};
-    }
-
-    friend bit_flags operator | (const bit_flags& l, const bit_flags& r) noexcept {
-        return {static_cast<E>(l.m_storage | r.m_storage)};
-    }
-
-    friend bool operator == (const bit_flags& l, const bit_flags& r) noexcept {
-        return l.m_storage == r.m_storage;
-    }
-    friend bool operator != (const bit_flags& l, const bit_flags& r) noexcept {
-        return l.m_storage != r.m_storage;
-    }
-
-private:
-    underlying_t m_storage;
-};
-
 // A mount namespace detector interface. Any implementation aware about the namespaces
 // can exist behind this interface even trivial one which knows about the process owning
 // namespace only.

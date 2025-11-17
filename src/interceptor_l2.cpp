@@ -998,7 +998,7 @@ void mu_interceptor_impl::on_fs_event(void* ctx, l1_fs_event&& event) noexcept {
             fs_event_impl::receiver_unlocker rec_unlocker;
 
             {
-                auto cache_entry = m_l2_cache.get_ce(
+                auto cache_entry = m_l2_cache.get_cache_entry(
                     current_fd_stat.st_dev, current_fd_stat.st_ino,
                     dev_last_change_seq_num, current_fd_stat.st_ctime);
 
@@ -1013,7 +1013,8 @@ void mu_interceptor_impl::on_fs_event(void* ctx, l1_fs_event&& event) noexcept {
 
                     std::optional<l2_cache::rce> cache_rec_entry;
                     if (s.is_cache_enabled())
-                        cache_rec_entry.emplace(cache_entry.get_rce(s.id(), s.m_cache_rce_storage, ev_type));
+                        cache_rec_entry.emplace(
+                            cache_entry.get_cache_entry_for_receiver(s.id(), s.m_cache_rce_storage, ev_type));
 
                     const bool need_to_post_verdict =
                         (std::uint32_t)ev_type

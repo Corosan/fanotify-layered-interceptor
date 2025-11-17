@@ -33,9 +33,9 @@ TEST(L2Cache, Basic) {
     std::optional<l2_cache::rce> rce1, rce2;
 
     {
-        auto ce = c.get_ce(/*dev_id*/ 1, /*node_id*/ 100, /*dev_change*/ 12, /*ctime*/ 111);
+        auto ce = c.get_cache_entry(/*dev_id*/ 1, /*node_id*/ 100, /*dev_change*/ 12, /*ctime*/ 111);
         {
-            auto rce = ce.get_rce(/*subscr_id*/ 4, rce_storage, fs_event_type::open_perm);
+            auto rce = ce.get_cache_entry_for_receiver(/*subscr_id*/ 4, rce_storage, fs_event_type::open_perm);
 
             verdict v;
             EXPECT_EQ(false, rce.is_verdict_ready(v));
@@ -45,7 +45,7 @@ TEST(L2Cache, Basic) {
         }
 
         {
-            auto rce = ce.get_rce(/*subscr_id*/ 5, rce_storage, fs_event_type::open_perm);
+            auto rce = ce.get_cache_entry_for_receiver(/*subscr_id*/ 5, rce_storage, fs_event_type::open_perm);
 
             verdict v;
             EXPECT_EQ(false, rce.is_verdict_ready(v));
@@ -57,9 +57,9 @@ TEST(L2Cache, Basic) {
 
     // Next modification event coming. It must reset all cache state for this dev/inode
     {
-        auto ce = c.get_ce(/*dev_id*/ 1, /*node_id*/ 100, /*dev_change*/ 12, /*ctime*/ 111);
+        auto ce = c.get_cache_entry(/*dev_id*/ 1, /*node_id*/ 100, /*dev_change*/ 12, /*ctime*/ 111);
         {
-            auto rce = ce.get_rce(/*subscr_id*/ 4, rce_storage, fs_event_type::modify);
+            auto rce = ce.get_cache_entry_for_receiver(/*subscr_id*/ 4, rce_storage, fs_event_type::modify);
 
             verdict v;
             EXPECT_EQ(false, rce.is_verdict_ready(v));
@@ -73,9 +73,9 @@ TEST(L2Cache, Basic) {
     rce2.reset();
 
     {
-        auto ce = c.get_ce(/*dev_id*/ 1, /*node_id*/ 100, /*dev_change*/ 12, /*ctime*/ 111);
+        auto ce = c.get_cache_entry(/*dev_id*/ 1, /*node_id*/ 100, /*dev_change*/ 12, /*ctime*/ 111);
         {
-            auto rce = ce.get_rce(/*subscr_id*/ 4, rce_storage, fs_event_type::open_perm);
+            auto rce = ce.get_cache_entry_for_receiver(/*subscr_id*/ 4, rce_storage, fs_event_type::open_perm);
 
             verdict v;
             EXPECT_EQ(false, rce.is_verdict_ready(v));
@@ -85,7 +85,7 @@ TEST(L2Cache, Basic) {
         }
 
         {
-            auto rce = ce.get_rce(/*subscr_id*/ 5, rce_storage, fs_event_type::open_perm);
+            auto rce = ce.get_cache_entry_for_receiver(/*subscr_id*/ 5, rce_storage, fs_event_type::open_perm);
 
             verdict v;
             EXPECT_EQ(false, rce.is_verdict_ready(v));
@@ -101,9 +101,9 @@ TEST(L2Cache, Basic) {
     rce2.reset();
 
     {
-        auto ce = c.get_ce(/*dev_id*/ 1, /*node_id*/ 100, /*dev_change*/ 12, /*ctime*/ 111);
+        auto ce = c.get_cache_entry(/*dev_id*/ 1, /*node_id*/ 100, /*dev_change*/ 12, /*ctime*/ 111);
         {
-            auto rce = ce.get_rce(/*subscr_id*/ 4, rce_storage, fs_event_type::open_perm);
+            auto rce = ce.get_cache_entry_for_receiver(/*subscr_id*/ 4, rce_storage, fs_event_type::open_perm);
 
             verdict v = verdict::deny;
             EXPECT_EQ(true, rce.is_verdict_ready(v));
@@ -111,7 +111,7 @@ TEST(L2Cache, Basic) {
         }
 
         {
-            auto rce = ce.get_rce(/*subscr_id*/ 5, rce_storage, fs_event_type::open_perm);
+            auto rce = ce.get_cache_entry_for_receiver(/*subscr_id*/ 5, rce_storage, fs_event_type::open_perm);
 
             verdict v = verdict::allow;
             EXPECT_EQ(true, rce.is_verdict_ready(v));
@@ -121,9 +121,9 @@ TEST(L2Cache, Basic) {
 
     // Device mount state changed - the cache entry should be reset again
     {
-        auto ce = c.get_ce(/*dev_id*/ 1, /*node_id*/ 100, /*dev_change*/ 13, /*ctime*/ 111);
+        auto ce = c.get_cache_entry(/*dev_id*/ 1, /*node_id*/ 100, /*dev_change*/ 13, /*ctime*/ 111);
         {
-            auto rce = ce.get_rce(/*subscr_id*/ 4, rce_storage, fs_event_type::open_perm);
+            auto rce = ce.get_cache_entry_for_receiver(/*subscr_id*/ 4, rce_storage, fs_event_type::open_perm);
 
             verdict v;
             EXPECT_EQ(false, rce.is_verdict_ready(v));
@@ -137,9 +137,9 @@ TEST(L2Cache, Basic) {
     rce1.reset();
 
     {
-        auto ce = c.get_ce(/*dev_id*/ 1, /*node_id*/ 100, /*dev_change*/ 13, /*ctime*/ 111);
+        auto ce = c.get_cache_entry(/*dev_id*/ 1, /*node_id*/ 100, /*dev_change*/ 13, /*ctime*/ 111);
         {
-            auto rce = ce.get_rce(/*subscr_id*/ 4, rce_storage, fs_event_type::open_perm);
+            auto rce = ce.get_cache_entry_for_receiver(/*subscr_id*/ 4, rce_storage, fs_event_type::open_perm);
 
             verdict v = verdict::deny;
             EXPECT_EQ(true, rce.is_verdict_ready(v));
@@ -149,9 +149,9 @@ TEST(L2Cache, Basic) {
 
     // ctime changed - reset the cache entry again
     {
-        auto ce = c.get_ce(/*dev_id*/ 1, /*node_id*/ 100, /*dev_change*/ 13, /*ctime*/ 112);
+        auto ce = c.get_cache_entry(/*dev_id*/ 1, /*node_id*/ 100, /*dev_change*/ 13, /*ctime*/ 112);
         {
-            auto rce = ce.get_rce(/*subscr_id*/ 4, rce_storage, fs_event_type::open_perm);
+            auto rce = ce.get_cache_entry_for_receiver(/*subscr_id*/ 4, rce_storage, fs_event_type::open_perm);
 
             verdict v;
             EXPECT_EQ(false, rce.is_verdict_ready(v));

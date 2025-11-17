@@ -307,8 +307,8 @@ class mu_interceptor_impl : public mu_interceptor, interceptor_l1::l1_client {
 
         subscription(
             mu_subscriber& client,
-            std::uint32_t requested_event_types,
-            std::uint32_t mask_event_types,
+            std::uint32_t requested_event_types,    // event types directly wanted by this subscription
+            std::uint32_t mask_event_types,         // event types which actually can drive this subscription
             std::string prefix_path,
             unsigned id,
             bool cache_enabled)

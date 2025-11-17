@@ -648,4 +648,80 @@ private:
     void thread_proc();
 };
 
+template <typename E> class bit_flags {
+public:
+    typedef typename std::underlying_type<E>::type underlying_t;
+
+    bit_flags() = default;
+
+    constexpr bit_flags(E v) noexcept
+        : m_storage(static_cast<underlying_t>(v)) {
+    }
+
+    constexpr bit_flags& operator &= (const bit_flags& r) noexcept {
+        m_storage &= r.m_storage;
+        return *this;
+    }
+
+    constexpr bit_flags& operator |= (const bit_flags& r) noexcept {
+        m_storage |= r.m_storage;
+        return *this;
+    }
+
+    constexpr explicit operator underlying_t() const noexcept { return m_storage; }
+    constexpr explicit operator bool() const noexcept { return m_storage; }
+
+    constexpr bit_flags operator~() const noexcept { return static_cast<E>(~m_storage); }
+
+    friend constexpr bit_flags operator & (const bit_flags& l, const bit_flags& r) noexcept {
+        return {static_cast<E>(l.m_storage & r.m_storage)};
+    }
+
+    friend constexpr bit_flags operator | (const bit_flags& l, const bit_flags& r) noexcept {
+        return {static_cast<E>(l.m_storage | r.m_storage)};
+    }
+
+    friend constexpr bool operator == (const bit_flags& l, const bit_flags& r) noexcept {
+        return l.m_storage == r.m_storage;
+    }
+    friend constexpr bool operator != (const bit_flags& l, const bit_flags& r) noexcept {
+        return l.m_storage != r.m_storage;
+    }
+
+private:
+    underlying_t m_storage{};
+};
+
+// namespace detail
+// {
+// 
+// void enum_test_conversion(...);
+// void enum_test_conversion(int) = delete;
+// 
+// template<class E>
+// concept is_scoped_enum_impl =
+//     std::is_enum_v<E> &&
+//     requires { detail::enum_test_conversion(E{}); };
+// 
+// template<class T>
+// struct is_scoped_enum : std::bool_constant<detail::is_scoped_enum_impl<T>> {};
+// 
+// } // namespace detail
+
 } // ns fan_interceptor::utils
+
+// namespace fan_interceptor {
+// 
+// template <typename E> requires utils::detail::is_scoped_enum<E>::value
+// constexpr utils::bit_flags<E> operator|(E l, E r) noexcept
+// {
+//     return utils::bit_flags<E>{l} | r;
+// }
+// 
+// template <typename E> requires utils::detail::is_scoped_enum<E>::value
+// constexpr utils::bit_flags<E> operator~(E v) noexcept
+// {
+//     return ~utils::bit_flags<E>{v};
+// }
+// 
+// } // ns fan_interceptor

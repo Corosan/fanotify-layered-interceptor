@@ -39,7 +39,13 @@ struct cache_rce_storage {
     std::uint32_t m_orig_mask_event_types;
 };
 
+typedef utils::bit_flags<fs_event_type> fs_event_types;
+
 class l2_cache {
+    // The cache works with file entries denoted by {device_id, file_inode_id}. Perfectly enough if
+    // forgot about possible inode reusing in case of very fast file delete-create operations on
+    // filesystems with coarse file creation timestamps. The latter can be addressed by delaying of
+    // inode reusage with temporary holding of file descriptors on files being deleted.
     typedef std::pair<dev_t, ino_t> key_t;
 
     struct key_hash {
@@ -48,16 +54,19 @@ class l2_cache {
         }
     };
 
-    struct rec_entry_data {
+    // A piece of data stored per file for each receiver (a subscriber in other words). Remember
+    // that different receivers can have different opition on the same file, thus having different
+    // verdicts on particular event.
+    struct receiver_entry_data {
         unsigned m_subscr_id;
         verdict m_open_verdict;
         verdict m_open_exec_verdict;
         verdict m_access_verdict;
-        std::uint32_t m_has_verdicts;
+        fs_event_types m_have_verdicts;
     };
 
     struct file_entry_data {
-        typedef utils::small_vector<rec_entry_data, 4> rec_entries_t;
+        typedef utils::small_vector<receiver_entry_data, 4> receiver_entries_t;
 
         // This object can be destroyed only when this count is zero
         // TODO: spin-waiting or to use real mutex per each file entry?
@@ -69,10 +78,10 @@ class l2_cache {
         utils::spin_lock m_mutex;
 
         // Per-receiver states; sorted by rec_entry_data::m_subscr_id
-        rec_entries_t m_rec_entries;
+        receiver_entries_t m_receiver_entries;
 
         void re_init(unsigned dev_last_change_seq_num, std::time_t ctime) {
-            m_rec_entries.clear();
+            m_receiver_entries.clear();
             m_dev_last_change_seq_num = dev_last_change_seq_num;
             m_ctime = ctime;
         }
@@ -112,7 +121,7 @@ public:
     // also). As long as particular i-nodes can be reused if one file object is deleted (unlinked)
     // and new one is created, creation time also helps to judge whether it's the original file
     // object.
-    cache_entry get_ce(dev_t dev, ino_t ino, unsigned dev_last_change_seq_num, std::time_t ctime);
+    cache_entry get_cache_entry(dev_t dev, ino_t ino, unsigned dev_last_change_seq_num, std::time_t ctime);
 
     bool try_remove_ce_data(key_t key, unsigned long* last_entries_ver = nullptr);
 
@@ -133,7 +142,7 @@ private:
 // single-threaded wrapper around multi-threaded cache entry
 class l2_cache::cache_entry {
 public:
-    cache_entry(cache_entry& r) noexcept
+    cache_entry(cache_entry&& r) noexcept
         : m_parent(r.m_parent)
         , m_key(r.m_key)
         , m_dev_last_change_seq_num(r.m_dev_last_change_seq_num)
@@ -147,7 +156,7 @@ public:
             m_entry_ptr->m_del_lock_count.fetch_sub(1, std::memory_order_release);
     }
 
-    rce get_rce(unsigned subscr_id, cache_rce_storage&, fs_event_type);
+    rce get_cache_entry_for_receiver(unsigned subscr_id, cache_rce_storage&, fs_event_type);
 
 private:
     l2_cache& m_parent;
@@ -172,11 +181,11 @@ private:
 
     void try_remove_binded_ce_data();
 
-    friend cache_entry l2_cache::get_ce(dev_t, ino_t, unsigned, std::time_t);
+    friend cache_entry l2_cache::get_cache_entry(dev_t, ino_t, unsigned, std::time_t);
     friend rce;
 };
 
-inline auto l2_cache::get_ce(dev_t dev, ino_t ino, unsigned dev_last_change_seq_num, std::time_t ctime)
+inline auto l2_cache::get_cache_entry(dev_t dev, ino_t ino, unsigned dev_last_change_seq_num, std::time_t ctime)
     -> cache_entry {
     return {*this, key_t(dev, ino), dev_last_change_seq_num, ctime};
 }
@@ -187,7 +196,7 @@ public:
         cont = 1, delay_close_fd = 2
     };
 
-    typedef bit_flags<action_flag> action_flags_t;
+    typedef utils::bit_flags<action_flag> action_flags_t;
 
     bool is_verdict_ready(verdict&) const;
     action_flags_t prepare_for_work();
@@ -212,11 +221,11 @@ private:
         , m_key(m_parent_ce.m_key) {
     }
 
-    friend rce cache_entry::get_rce(unsigned, cache_rce_storage&, fs_event_type);
+    friend rce cache_entry::get_cache_entry_for_receiver(unsigned, cache_rce_storage&, fs_event_type);
 };
 
-inline auto l2_cache::cache_entry::get_rce(unsigned subscr_id, cache_rce_storage& s,
-        fs_event_type ev_type) -> rce {
+inline auto l2_cache::cache_entry::get_cache_entry_for_receiver(
+        unsigned subscr_id, cache_rce_storage& s, fs_event_type ev_type) -> rce {
     return {*this, s, subscr_id, ev_type};
 }
 
