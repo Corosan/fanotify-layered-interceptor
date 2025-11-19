@@ -970,10 +970,12 @@ void mu_interceptor_impl::on_fs_event(void* ctx, l1_fs_event&& event) noexcept {
             mnt_ns_unique_id_latest = m_mount_ns_unique_id_gen.load(std::memory_order_relaxed);
         }
 
-        unsigned dev_last_change_seq_num;
+        unsigned dev_last_change_seq_num = 0;
         {
             std::shared_lock l{m_disk_last_mp_change_mutex};
-            dev_last_change_seq_num = m_disk_last_mp_changes[current_fd_stat.st_dev];
+            if (auto it = m_disk_last_mp_changes.find(current_fd_stat.st_dev);
+                it != m_disk_last_mp_changes.end())
+                dev_last_change_seq_num = it->second;
         }
 
         for (fs_event_type ev_type : single_types) {

@@ -9,6 +9,9 @@
 #include <variant>
 #include <deque>
 #include <thread>
+#include <chrono>
+#include <initializer_list>
+#include <algorithm>
 #include <type_traits>
 
 #include <unistd.h>
@@ -21,29 +24,37 @@ namespace {
 using namespace ::fan_interceptor;
 using namespace ::fan_interceptor::utils;
 
-// Replacement for absent C++20 type
-class semaphore {
+class mt_barrier final {
 public:
-    void release() {
+    void inc() {
         std::lock_guard l{m_mutex};
-        ++m_val;
-        m_cv.notify_one();
+        ++m_check_point;
+        m_cv.notify_all();
     }
 
-    void acquire() {
+    // Wait until the mt_barrier walks through a check point {min(cps) - 1} and increment state.
+    // Thus the object can walk through cp N+1 only after passing cp N.
+    bool check_point(std::initializer_list<int> cps,
+            std::chrono::seconds timeout = std::chrono::seconds{10}) {
         std::unique_lock l{m_mutex};
-        m_cv.wait(l, [this]{
-            if (m_val < 0)
-                return false;
-            --m_val;
+        if (m_check_point >= min(cps))
+            return false;
+        if (m_cv.wait_for(l, timeout, [this, cps]{
+                return std::any_of(cps.begin(), cps.end(), [this](int v){
+                    return v == m_check_point + 1;
+                });
+            })) {
+            ++m_check_point;
+            m_cv.notify_all();
             return true;
-        });
+        }
+        return false;
     }
 
 private:
     std::mutex m_mutex;
     std::condition_variable m_cv;
-    int m_val = 0;
+    int m_check_point = 0;
 };
 
 class l1_mock : public interceptor_l1 {
@@ -70,8 +81,15 @@ public:
 
 class subscriber_mock : public mu_subscriber {
 public:
+    explicit subscriber_mock(std::string name = "subscriber mock")
+        : m_name{std::move(name)} {
+    }
+
     MOCK_METHOD(void, on_fs_event, (fs_event_ptr), (override));
-    std::string_view name() override { return "subscriber mock"; }
+    std::string_view name() override { return m_name; }
+
+private:
+    std::string m_name;
 };
 
 class trivial_timer_mock : public trivial_timer {
@@ -928,7 +946,7 @@ TEST(Layer2, UnsubscribeFromCallback) {
     iceptor.subscribe(subscr1, {(std::uint32_t)fs_event_type::open});
     iceptor.subscribe(subscr2, {(std::uint32_t)fs_event_type::open});
 
-    semaphore latch;
+    mt_barrier barrier;
     std::atomic<int> order{0};
 
     // These events will be delivered in another thread
@@ -936,8 +954,8 @@ TEST(Layer2, UnsubscribeFromCallback) {
             Pointer(Property("pid", &fs_event::pid, Eq(5))),
             Pointer(Property("mnt_ns_id", &fs_event::mnt_ns_id, Eq(152))),
             Pointer(Property("fd", &fs_event::fd, IsSameFile("/usr/bin")))
-        ))).WillOnce([&latch, &order](auto){
-            latch.release();
+        ))).WillOnce([&barrier, &order](auto){
+            barrier.inc();
             std::this_thread::sleep_for(std::chrono::seconds(1));
             order.fetch_add(1);
         });
@@ -967,7 +985,6 @@ TEST(Layer2, UnsubscribeFromCallback) {
             Pointer(Property("fd", &fs_event::fd, IsSameFile("/usr/bin")))
         )));
 
-    latch.acquire();
     other_worker.exec_async([l1_c, &other_worker]{
         l1_c->on_fs_event(other_worker.get_thread_ctx(), l1_fs_event{
             (std::uint32_t)fs_event_type::open,
@@ -977,7 +994,7 @@ TEST(Layer2, UnsubscribeFromCallback) {
             1000});
     });
 
-    latch.acquire();
+    EXPECT_TRUE(barrier.check_point({2}));
     l1_c->on_fs_event(this_thread_ctx, l1_fs_event{
         (std::uint32_t)fs_event_type::open,
         fd_holder{::open("/usr/bin", O_RDONLY)},
@@ -1275,7 +1292,7 @@ TEST(Layer2, DependentThreadsTracking) {
     interceptor_l1::l1_client* l1_c = nullptr;
     auto l1_m = std::make_unique<StrictMock<l1_mock>>(&l1_m_ptr);
 
-    StrictMock<subscriber_mock> subscr1, subscr2;
+    StrictMock<subscriber_mock> subscr1{"subscr1"}, subscr2{"subscr2"};
     StrictMock<MockFunction<interceptor_l1::l1_client::mask_setter_t>> mask_setter;
 
     EXPECT_CALL(*l1_m_ptr, set_client).WillOnce(SaveArg<0>(&l1_c));
@@ -1308,20 +1325,18 @@ TEST(Layer2, DependentThreadsTracking) {
     iceptor.subscribe(subscr1, {(std::uint32_t)fs_event_type::open_exec});
     iceptor.subscribe(subscr2, {(std::uint32_t)fs_event_type::open});
 
-    semaphore latch, subscr2_latch;
+    mt_barrier barrier;
     std::atomic<int> order{0};
 
-    EXPECT_CALL(subscr1, on_fs_event).WillOnce([&latch, &order](auto){
-        latch.acquire();
+    EXPECT_CALL(subscr1, on_fs_event).WillOnce([&barrier, &order](auto){
+        EXPECT_TRUE(barrier.check_point({1}));
         std::this_thread::sleep_for(std::chrono::seconds(1));
         int v = 0;
         order.compare_exchange_strong(v, 1);
     });
 
-    EXPECT_CALL(subscr2, on_fs_event).WillOnce([&iceptor, &subscr1, &latch, &subscr2_latch, &order](auto){
-        subscr2_latch.release();        // now subscr2 can be unsubscribed - the 'unsubscribe' must wait
-                                        // until this cb is finished
-        latch.release();
+    EXPECT_CALL(subscr2, on_fs_event).WillOnce([&iceptor, &subscr1, &barrier, &order](auto){
+        EXPECT_TRUE(barrier.check_point({2}));
         iceptor.unsubscribe(subscr1);   // this call must block until an event handler
                                         // expressed in a statement above is not finished
         int v = 1;
@@ -1331,8 +1346,6 @@ TEST(Layer2, DependentThreadsTracking) {
     EXPECT_CALL(mask_setter, Call(10, _));
     EXPECT_CALL(mask_setter, Call(10, 0));
 
-    latch.acquire();
-    subscr2_latch.acquire();
     w2.exec_async([l1_c, &w2]{
         l1_c->on_fs_event(w2.get_thread_ctx(), l1_fs_event{
             (std::uint32_t)fs_event_type::open,
@@ -1351,7 +1364,7 @@ TEST(Layer2, DependentThreadsTracking) {
             1000});
     });
 
-    subscr2_latch.acquire();
+    EXPECT_TRUE(barrier.check_point({3}));
     iceptor.unsubscribe(subscr2);
     EXPECT_EQ(order.load(), 2);
 
