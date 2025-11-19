@@ -1,3 +1,5 @@
+[![CMake on a single platform](https://github.com/Corosan/fanotify-layered-interceptor/actions/workflows/cmake-single-platform.yml/badge.svg)](https://github.com/Corosan/fanotify-layered-interceptor/actions/workflows/cmake-single-platform.yml)
+
 # Layered fanotify interceptor
 
 Fanotify subsystem is a Linux kernel module providing events to user-space from filesystem activity
