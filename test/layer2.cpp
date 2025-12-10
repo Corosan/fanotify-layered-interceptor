@@ -13,6 +13,7 @@
 #include <initializer_list>
 #include <algorithm>
 #include <type_traits>
+#include <random>
 
 #include <unistd.h>
 #include <sys/types.h>
@@ -23,6 +24,7 @@ namespace {
 
 using namespace ::fan_interceptor;
 using namespace ::fan_interceptor::utils;
+using namespace std::literals::chrono_literals;
 
 class mt_barrier final {
 public:
@@ -35,7 +37,7 @@ public:
     // Wait until the mt_barrier walks through a check point {min(cps) - 1} and increment state.
     // Thus the object can walk through cp N+1 only after passing cp N.
     bool check_point(std::initializer_list<int> cps,
-            std::chrono::seconds timeout = std::chrono::seconds{10}) {
+            std::chrono::seconds timeout = 10s) {
         std::unique_lock l{m_mutex};
         if (m_check_point >= min(cps))
             return false;
@@ -103,7 +105,7 @@ class thread_worker final {
 public:
     void start(interceptor_l1::l1_client *l1_c) {
         this->l1_c = l1_c;
-        runner = std::thread{[this]{ run(); }};
+        runner = std::thread{&thread_worker::run, this};
     }
 
     void stop() {
@@ -956,7 +958,7 @@ TEST(Layer2, UnsubscribeFromCallback) {
             Pointer(Property("fd", &fs_event::fd, IsSameFile("/usr/bin")))
         ))).WillOnce([&barrier, &order](auto){
             barrier.inc();
-            std::this_thread::sleep_for(std::chrono::seconds(1));
+            std::this_thread::sleep_for(1s);
             order.fetch_add(1);
         });
     EXPECT_CALL(subscr2, on_fs_event(AllOf(
@@ -1330,7 +1332,7 @@ TEST(Layer2, DependentThreadsTracking) {
 
     EXPECT_CALL(subscr1, on_fs_event).WillOnce([&barrier, &order](auto){
         EXPECT_TRUE(barrier.check_point({1}));
-        std::this_thread::sleep_for(std::chrono::seconds(1));
+        std::this_thread::sleep_for(1s);
         int v = 0;
         order.compare_exchange_strong(v, 1);
     });
@@ -1369,13 +1371,109 @@ TEST(Layer2, DependentThreadsTracking) {
     EXPECT_EQ(order.load(), 2);
 
     EXPECT_CALL(*l1_m_ptr, stop).WillOnce([&l1_c, &this_thread_ctx, &w1, &w2, &mask_setter]{
-            l1_c->on_umount(/*nsid*/ 152, /*dev_id*/ 1, /*mount_id*/ 10, "/", mask_setter.AsStdFunction());
-            l1_c->mount_changes_done(152, mask_setter.AsStdFunction(), true);
-            l1_c->thread_finishing(this_thread_ctx);
-            w1.stop();
-            w2.stop();
-        });
+        l1_c->on_umount(/*nsid*/ 152, /*dev_id*/ 1, /*mount_id*/ 10, "/", mask_setter.AsStdFunction());
+        l1_c->mount_changes_done(152, mask_setter.AsStdFunction(), true);
+        l1_c->thread_finishing(this_thread_ctx);
+        w1.stop();
+        w2.stop();
+    });
     iceptor.stop();
+}
+
+TEST(Layer2, StressSubscribe) {
+    using namespace ::testing;
+
+    l1_mock* l1_m_ptr = nullptr;
+    interceptor_l1::l1_client* l1_c = nullptr;
+    auto l1_m = std::make_unique<StrictMock<l1_mock>>(&l1_m_ptr);
+
+    EXPECT_CALL(*l1_m_ptr, set_client).WillOnce(SaveArg<0>(&l1_c));
+
+    mu_interceptor_impl iceptor{
+        g_common_l2_params,
+        std::move(l1_m),
+        std::make_unique<StrictMock<trivial_timer_mock>>()};
+
+    const int thread_pool_size = 4;
+    std::atomic<bool> stop_flag = false;
+    std::vector<std::thread> workers;
+
+    auto empty_mask_setter = [](int, std::size_t){};
+
+    auto worker_proc = [&l1_c, &stop_flag]{
+        void* ctx = nullptr;
+        l1_c->thread_started(&ctx);
+
+        fd_holder tst_fs_object{::open("/usr/bin", O_RDONLY)};
+        std::default_random_engine rd{
+            static_cast<std::default_random_engine::result_type>(
+                std::chrono::steady_clock::now().time_since_epoch().count())};
+        std::uniform_int_distribution r{0, 50};
+
+        while (!stop_flag) {
+            if (int t = r(rd); t)
+                std::this_thread::sleep_for(std::chrono::milliseconds(t));
+
+            l1_c->on_fs_event(ctx, l1_fs_event{
+                (std::uint32_t)fs_event_type::open,
+                tst_fs_object,
+                5, 152, 1000});
+        }
+
+        l1_c->thread_finishing(ctx);
+    };
+
+    EXPECT_CALL(*l1_m_ptr, start).WillOnce([&workers, &worker_proc]{
+        for (int i = 0; i < thread_pool_size; ++i) {
+            workers.push_back(std::thread{worker_proc});
+        }
+    });
+
+    iceptor.start();
+
+    l1_c->on_mount(/*nsid*/ 152, /*dev_id*/ 1, /*mount_id*/ 10, "/", empty_mask_setter);
+    l1_c->mount_changes_done(/*nsid*/ 152, empty_mask_setter, false);
+
+    EXPECT_CALL(*l1_m_ptr, stop).WillOnce([&workers, &stop_flag, &l1_c, &empty_mask_setter]{
+        stop_flag = true;
+        for (auto& t : workers)
+            t.join();
+
+        l1_c->on_umount(/*nsid*/ 152, /*dev_id*/ 1, /*mount_id*/ 10, "/", empty_mask_setter);
+        l1_c->mount_changes_done(152, empty_mask_setter, true);
+
+    });
+
+    EXPECT_CALL(*l1_m_ptr, request_update_masks)
+        .WillRepeatedly([l1_c, &empty_mask_setter](auto, auto ctx){
+            l1_c->update_masks(152, ctx, empty_mask_setter);
+            l1_c->update_masks_done(ctx);
+        });
+
+    StrictMock<subscriber_mock> subscr{"subscr"};
+
+    std::atomic<int> called_times = 0;
+    EXPECT_CALL(subscr, on_fs_event).WillRepeatedly([&called_times](auto){
+        ++called_times;
+    });
+
+    std::default_random_engine rd{
+        static_cast<std::default_random_engine::result_type>(
+            std::chrono::steady_clock::now().time_since_epoch().count())};
+    std::uniform_int_distribution r{0, 30};
+
+    for (int i = 0; i < 100; ++i) {
+        iceptor.subscribe(subscr, {(std::uint32_t)fs_event_type::open, {}, /*cache_enabled*/ false});
+        if (int t = r(rd); t)
+            std::this_thread::sleep_for(std::chrono::milliseconds(t));
+        EXPECT_TRUE(iceptor.unsubscribe(subscr));
+        if (int t = r(rd); t)
+            std::this_thread::sleep_for(std::chrono::milliseconds(t));
+    }
+
+    iceptor.stop();
+
+    EXPECT_GE(called_times, 100);
 }
 
 } // ns anonymous

@@ -90,8 +90,8 @@ class mu_interceptor_impl : public mu_interceptor, interceptor_l1::l1_client {
             return m_subscription.try_mark_used();
         }
 
-        void call_client(fs_event_ptr&& event) const {
-            m_subscription.call_client(std::move(event));
+        void call_client(fs_event_ptr&& event, bool& need_to_decr_thread_count) const {
+            m_subscription.call_client(std::move(event), need_to_decr_thread_count);
         }
 
         void finished_calling_client() const {
@@ -342,14 +342,21 @@ class mu_interceptor_impl : public mu_interceptor, interceptor_l1::l1_client {
 
         bool are_no_events_delivered(bool is_from_cb_handler_thread) noexcept;
 
-        void call_client(fs_event_ptr&& event) {
-            m_state.fetch_add(STATE_THREAD_COUNTER_INC, std::memory_order_relaxed);
+        void call_client(fs_event_ptr&& event, bool& need_to_decr_thread_count) {
+            unsigned state, new_state;
+            do {
+                state = m_state.load(std::memory_order_relaxed);
+                if (state & STATE_PENDING_DELETED)
+                    return;
+                new_state = state + STATE_THREAD_COUNTER_INC;
+            } while (! m_state.compare_exchange_weak(state, new_state, std::memory_order_relaxed));
 
             {
                 std::unique_lock l{m_referencing_thread_mutex};
                 m_referencing_threads.push_back(std::this_thread::get_id());
             }
 
+            need_to_decr_thread_count = true;
             m_client.on_fs_event(std::move(event));
         }
 

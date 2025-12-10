@@ -1076,10 +1076,8 @@ void mu_interceptor_impl::on_fs_event(void* ctx, l1_fs_event&& event) noexcept {
                 bool need_to_finalize = false;
 
                 try {
-                    if (ptr) {
-                        need_to_finalize = true;
-                        receiver.call_client(std::move(ptr));
-                    }
+                    if (ptr)
+                        receiver.call_client(std::move(ptr), need_to_finalize);
                 } catch (const std::exception& e) {
                     TRACE_L2_ERROR() << "catched unexpected exception on calling subscriber '"
                         << receiver.client_name() << "' for event id=" << event.m_event_id
