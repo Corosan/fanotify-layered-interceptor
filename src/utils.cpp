@@ -300,6 +300,10 @@ int polling_timer_executor::post_single_shot_task(cb_t cb, time_point_t when) {
     {
         std::unique_lock l{m_items_mutex};
 
+        // Search for the first place with an appropriate time of execution but
+        // after skipping {executing} and {executed} items first. If an {executing}
+        // item's handler (indirectly) calls this method, the new item can be inserted
+        // right after this one currently executing.
         auto it = lower_bound(
             find_if(m_items.begin(), m_items.end(),
                 [](auto& v){ return ! v.m_executing && ! v.m_executed; }),
@@ -352,7 +356,7 @@ void polling_timer_executor::cancel_task(int id) {
 
     if (it->m_executing) {
         m_current_task_cancelling = true;
-        m_executing_cv.wait(l, [this](){ return m_current_task_cancelling == false; });
+        m_executing_cv.wait(l, [this]{ return m_current_task_cancelling == false; });
         return;
     }
 
@@ -391,14 +395,19 @@ bool polling_timer_executor::empty() {
 */
 
 thread_timer_executor::thread_timer_executor()
-    : m_timer([this](){ m_cv.notify_all(); }) {
+    : m_timer([this]{
+        std::unique_lock l{m_m};
+        ++m_replan_called_times;
+        m_cv.notify_all();
+    }) {
 }
 
 void thread_timer_executor::thread_proc() {
-    while (! m_stopping) {
+    bool cont = true;
+    while (cont) {
         time_point_t next_tp{};
         try {
-            next_tp = m_timer.execute([](){ return std::chrono::steady_clock::now(); });
+            next_tp = m_timer.execute([]{ return std::chrono::steady_clock::now(); });
         } catch (const std::exception& e) {
             TRACE_ERROR() << "failure while executing a task in a threaded timer: "
                 << utils::dump_exc_with_nested(e);
@@ -406,14 +415,27 @@ void thread_timer_executor::thread_proc() {
 
         if (next_tp.time_since_epoch().count()) {
             std::unique_lock l{m_m};
-            m_cv.wait_until(l, next_tp);
+            m_cv.wait_until(l, next_tp, [this, &cont]{
+                if (m_stopping) {
+                    cont = false;
+                    return true;
+                }
+                if (m_replan_called_times > 0) {
+                    --m_replan_called_times;
+                    return true;
+                }
+                return false;
+            });
         }
     }
 }
 
 void thread_timer_executor::stop() {
     if (m_thread.joinable()) {
-        m_stopping = true;
+        {
+            std::unique_lock l{m_m};
+            m_stopping = true;
+        }
         m_timer.cancel_all();
         m_cv.notify_all();
 

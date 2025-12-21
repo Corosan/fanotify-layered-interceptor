@@ -581,6 +581,12 @@ struct trivial_timer {
 // Assumes small amount of work items (vector is used for internal storage)
 class polling_timer_executor : public trivial_timer {
 public:
+    // Provided callback is executed when replanning is needed. In other words when it becomes
+    // evident that previous result of a call to "execute" method would return another value and
+    // waiting step of the caller must be interrupted. The callback is executed in a context of
+    // post_xxx_task methods. If the "execute" method is called in another thread, it's unspecified
+    // whether it's value is actual or not regarding to the {replan_cb} call. The rule of thumb
+    // could be to interrupt waiting as many times as the callback is invoked.
     explicit polling_timer_executor(cb_t replan_cb)
         : m_replan_cb(std::move(replan_cb)) {
     }
@@ -634,7 +640,7 @@ public:
         m_timer.cancel_all();
     }
 
-    void start() { m_thread = std::thread{[this](){ thread_proc(); }}; }
+    void start() { m_thread = std::thread{&thread_timer_executor::thread_proc, this}; }
     void stop();
 
 private:
@@ -643,7 +649,8 @@ private:
 
     std::mutex m_m;
     std::condition_variable m_cv;
-    bool m_stopping = false;
+    bool m_stopping{false};
+    int m_replan_called_times{0};
 
     void thread_proc();
 };

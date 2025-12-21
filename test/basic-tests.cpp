@@ -14,6 +14,8 @@ namespace {
 using namespace fan_interceptor;
 using namespace fan_interceptor::utils;
 
+using namespace std::chrono_literals;
+
 TEST(Utils, IntrusivePtr) {
     struct base_test_obj {
         int ref = 0;
@@ -161,13 +163,13 @@ TEST(DeferredDispatcher, BasicAssertions) {
 TEST(DeferredDispatcher, WaitOnCancelling) {
     deferred_dispatcher disp;
 
-    auto cb = disp.defer([](void*){ std::this_thread::sleep_for(std::chrono::seconds(1)); });
+    auto cb = disp.defer([](void*){ std::this_thread::sleep_for(1s); });
     std::thread t{[&disp]{ disp.dispatch(nullptr); }};
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    std::this_thread::sleep_for(100ms);
     auto t1 = std::chrono::steady_clock::now();
     disp.cancel(cb);
-    EXPECT_GE(std::chrono::steady_clock::now() - t1, std::chrono::milliseconds(500));
+    EXPECT_GE(std::chrono::steady_clock::now() - t1, 500ms);
 
     t.join();
 }
@@ -181,13 +183,13 @@ TEST(Reactor, Deferred) {
 
     std::thread t{[&cycles, &r]{ while (r.poll(nullptr)) cycles.fetch_add(1); }};
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    std::this_thread::sleep_for(100ms);
     auto c1 = cycles.load();
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    std::this_thread::sleep_for(100ms);
     EXPECT_EQ(c1, cycles.load());
 
     r.defer([&called](void*){ called++; });
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    std::this_thread::sleep_for(100ms);
     EXPECT_EQ(c1 + 1, cycles.load());
     EXPECT_EQ(1, called.load());
 
@@ -321,63 +323,65 @@ TEST(PollingTimer, Basic) {
     typedef polling_timer_executor::time_point_t tp_t;
 
     int replan_counter = 0;
-    polling_timer_executor pt{[&replan_counter](){ ++replan_counter; }};
+    polling_timer_executor pt{[&replan_counter]{ ++replan_counter; }};
 
-    EXPECT_EQ(tp_t::max(), pt.execute([](){ return tp_t{std::chrono::seconds(1)}; }));
+    // Expecting that next returned time point to re-check is {infinity} if there is no
+    // any task yet in the timer object.
+    EXPECT_EQ(tp_t::max(), pt.execute([]{ return tp_t{1s}; }));
 
-    int task1_count = 0, task2_count = 0;
-    /*task1_id = */ pt.post_single_shot_task(
-        [&task1_count](){ ++task1_count; }, tp_t{std::chrono::seconds(4)});
-    /*task2_id = */ pt.post_single_shot_task(
-        [&task2_count](){ ++task2_count; }, tp_t{std::chrono::seconds(2)});
-    int task3_id = pt.post_single_shot_task([](){}, tp_t{std::chrono::seconds(3)});
+    int task1_count = 0, task2_count = 0, task3_count = 0;
+    /*task1_id = */ pt.post_single_shot_task([&task1_count, &pt]{
+        ++task1_count;
+        pt.post_single_shot_task([&task1_count]{ task1_count += 100; }, tp_t{0s});
+    }, tp_t{4s});
+    /*task2_id = */ pt.post_single_shot_task([&task2_count]{ ++task2_count; }, tp_t{2s});
+    int task3_id = pt.post_single_shot_task([&task3_count]{ ++task3_count; }, tp_t{3s});
 
-    EXPECT_EQ(tp_t{std::chrono::seconds(2)}, pt.execute([](){ return tp_t{std::chrono::milliseconds(1500)}; }));
+    EXPECT_EQ(tp_t{2s}, pt.execute([]{ return tp_t{1500ms}; }));
     EXPECT_EQ(0, task1_count);
     EXPECT_EQ(0, task2_count);
 
     pt.cancel_task(task3_id);
 
-    EXPECT_EQ(tp_t{std::chrono::seconds(4)}, pt.execute([](){ return tp_t{std::chrono::milliseconds(2500)}; }));
+    EXPECT_EQ(tp_t{4s}, pt.execute([]{ return tp_t{2500ms}; }));
     EXPECT_EQ(0, task1_count);
     EXPECT_EQ(1, task2_count);
 
-    EXPECT_EQ(tp_t::max(), pt.execute([](){ return tp_t{std::chrono::seconds(5)}; }));
-    EXPECT_EQ(1, task1_count);
+    EXPECT_EQ(tp_t::max(), pt.execute([]{ return tp_t{5s}; }));
+    EXPECT_EQ(101, task1_count);
     EXPECT_EQ(1, task2_count);
 
     // Replan callback is called only when some task with the earliest execution time is added.
     // Here we've added {4 sec exec time} task which was first. Than we've added {2 sec exec time}
     // task.
     EXPECT_EQ(2, replan_counter);
+    EXPECT_EQ(0, task3_count);  // the task actually was never executed cause it has been cancelled
 }
 
 TEST(PollingTimer, RepeatTask) {
     typedef polling_timer_executor::time_point_t tp_t;
 
     int replan_counter = 0;
-    polling_timer_executor pt{[&replan_counter](){ ++replan_counter; }};
+    polling_timer_executor pt{[&replan_counter]{ ++replan_counter; }};
 
     int task1_count = 0, task2_count = 0;
-    pt.post_single_shot_task(
-        [&task1_count](){ ++task1_count; }, tp_t{std::chrono::milliseconds(4500)});
+    pt.post_single_shot_task([&task1_count]{ ++task1_count; }, tp_t{4500ms});
 
     EXPECT_EQ(1, replan_counter);
 
-    EXPECT_EQ(tp_t{std::chrono::milliseconds(4500)}, pt.execute([](){ return tp_t{std::chrono::seconds(1)}; }));
+    EXPECT_EQ(tp_t{4500ms}, pt.execute([]{ return tp_t{1s}; }));
 
-    int task2_id = pt.post_repeat_task(
-        [&task2_count](){ ++task2_count; }, std::chrono::seconds(1));
+    int task2_id = pt.post_repeat_task([&task2_count]{ ++task2_count; }, 1s);
 
     EXPECT_EQ(2, replan_counter);
 
-    EXPECT_EQ(tp_t{std::chrono::seconds(3)}, pt.execute([](){ return tp_t{std::chrono::seconds(2)}; }));
-    EXPECT_EQ(tp_t{std::chrono::seconds(3)}, pt.execute([](){ return tp_t{std::chrono::milliseconds(2500)}; }));
+    EXPECT_EQ(tp_t{3s}, pt.execute([]{ return tp_t{2s}; }));
+    EXPECT_EQ(tp_t{3s}, pt.execute([]{ return tp_t{2500ms}; }));
 
     EXPECT_EQ(0, task1_count);
     EXPECT_EQ(1, task2_count);
 
-    EXPECT_EQ(tp_t{std::chrono::seconds(4)}, pt.execute([](){ return tp_t{std::chrono::seconds(3)}; }));
+    EXPECT_EQ(tp_t{4s}, pt.execute([]{ return tp_t{3s}; }));
 
     EXPECT_EQ(0, task1_count);
     EXPECT_EQ(2, task2_count);
@@ -386,12 +390,12 @@ TEST(PollingTimer, RepeatTask) {
 
     EXPECT_EQ(2, replan_counter);
 
-    EXPECT_EQ(tp_t{std::chrono::milliseconds(4500)}, pt.execute([](){ return tp_t{std::chrono::seconds(4)}; }));
+    EXPECT_EQ(tp_t{4500ms}, pt.execute([]{ return tp_t{4s}; }));
 
     EXPECT_EQ(0, task1_count);
     EXPECT_EQ(2, task2_count);
 
-    EXPECT_EQ(tp_t::max(), pt.execute([](){ return tp_t{std::chrono::seconds(5)}; }));
+    EXPECT_EQ(tp_t::max(), pt.execute([]{ return tp_t{5s}; }));
 
     EXPECT_EQ(1, task1_count);
     EXPECT_EQ(2, task2_count);
@@ -405,16 +409,16 @@ TEST(ThreadTimer, Basic) {
 
     int task1_count = 0, task2_count = 0;
     pt.post_single_shot_task([&task1_count](){ ++task1_count; },
-        std::chrono::steady_clock::now() + std::chrono::seconds(1));
+        std::chrono::steady_clock::now() + 1s);
     pt.post_single_shot_task([&task2_count](){ ++task2_count; },
-        std::chrono::steady_clock::now() + std::chrono::seconds(2));
+        std::chrono::steady_clock::now() + 2s);
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+    std::this_thread::sleep_for(1500ms);
 
     auto t1 = std::chrono::steady_clock::now();
     pt.stop();
 
-    EXPECT_GE(std::chrono::milliseconds(400), std::chrono::steady_clock::now() - t1);
+    EXPECT_GE(400ms, std::chrono::steady_clock::now() - t1);
     EXPECT_EQ(1, task1_count);
     EXPECT_EQ(0, task2_count);
 }

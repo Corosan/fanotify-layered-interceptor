@@ -13,8 +13,8 @@ add_library(fan-interceptor OBJECT
     src/utils.cpp)
 
 target_include_directories(fan-interceptor INTERFACE src)
-target_compile_options(fan-interceptor PRIVATE -Wall $<$<CONFIG:DEBUG>:-fsanitize=address>)
-target_link_libraries(fan-interceptor PRIVATE $<$<CONFIG:DEBUG>:-fsanitize=address>)
+target_compile_options(fan-interceptor PRIVATE -Wall $<$<CONFIG:DEBUG>:-fsanitize=thread>)
+target_link_libraries(fan-interceptor PRIVATE $<$<CONFIG:DEBUG>:-fsanitize=thread>)
 
 add_executable(iceptor-tester src/iceptor-tester.cpp)
 target_link_libraries(iceptor-tester fan-interceptor)
@@ -22,7 +22,7 @@ target_link_libraries(iceptor-tester fan-interceptor)
 enable_testing()
 add_executable(unit-tests test/basic-tests.cpp test/layer2.cpp test/cache.cpp)
 target_link_libraries(unit-tests GTest::gtest_main gmock fan-interceptor)
-target_compile_options(unit-tests PRIVATE -Wall $<$<CONFIG:DEBUG>:-fsanitize=address>)
+target_compile_options(unit-tests PRIVATE -Wall $<$<CONFIG:DEBUG>:-fsanitize=thread>)
 
 include(GoogleTest)
 gtest_discover_tests(unit-tests)
