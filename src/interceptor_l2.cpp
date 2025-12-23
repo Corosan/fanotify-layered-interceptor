@@ -211,7 +211,7 @@ bool mu_interceptor_impl::subscription::try_mark_used() noexcept {
 }
 
 bool mu_interceptor_impl::subscription::finished_to_use() {
-    unsigned val = m_state.fetch_sub(STATE_USAGE_COUNTER_INC, std::memory_order_relaxed);
+    unsigned val = m_state.fetch_sub(STATE_USAGE_COUNTER_INC, std::memory_order_acq_rel);
     return (val & STATE_PENDING_DELETED)
         && ((val & STATE_USAGE_COUNTER_MASK) == 1)
         && ((val & STATE_THREAD_COUNTER_MASK) == 0);
@@ -224,14 +224,24 @@ bool mu_interceptor_impl::subscription::finished_calling_client_check_last() {
             m_referencing_threads.begin(), m_referencing_threads.end(), std::this_thread::get_id()));
     }
 
-    const unsigned val = m_state.fetch_sub(STATE_THREAD_COUNTER_INC, std::memory_order_relaxed);
+    std::unique_lock l{m_mutex, std::defer_lock};
+    bool locked_already = false;
+    unsigned value, new_value;
 
-    if (val & STATE_NEED_NOTIFY) {
-        const unsigned t_counter = val & STATE_THREAD_COUNTER_MASK;
-        if (((val & STATE_DELETE_RQ_FROM_CB_THREAD) && t_counter == STATE_THREAD_COUNTER_INC * 2)
-            || (!(val & STATE_DELETE_RQ_FROM_CB_THREAD) && t_counter == STATE_THREAD_COUNTER_INC)) {
-            m_mutex.lock();
-            m_mutex.unlock();
+    do {
+        value = m_state.load(std::memory_order_relaxed);
+        if (value & STATE_NEED_NOTIFY && ! locked_already) {
+            l.lock();
+            locked_already = true;
+        }
+        new_value = value - STATE_THREAD_COUNTER_INC;
+    } while (! m_state.compare_exchange_weak(value, new_value,
+        std::memory_order_acq_rel, std::memory_order_relaxed));
+
+    if (new_value & STATE_NEED_NOTIFY) {
+        const unsigned t_counter = new_value & STATE_THREAD_COUNTER_MASK;
+        if (((new_value & STATE_DELETE_RQ_FROM_CB_THREAD) && t_counter == STATE_THREAD_COUNTER_INC)
+            || (!(new_value & STATE_DELETE_RQ_FROM_CB_THREAD) && t_counter == 0)) {
             m_cv.notify_all();
         }
     }
@@ -239,10 +249,10 @@ bool mu_interceptor_impl::subscription::finished_calling_client_check_last() {
     // So, {true} is returned only if an 'unsubscribe' sequence has been executed, it was executed
     // from a working thread calling a user callback, no references exist on this subscription
     // object and no other outstanding events in other threads are delivered to clients.
-    return (val & STATE_PENDING_DELETED)
-        && (val & STATE_DELETE_RQ_FROM_CB_THREAD)
-        && (val & STATE_USAGE_COUNTER_MASK) == 0
-        && (val & STATE_THREAD_COUNTER_MASK) == STATE_THREAD_COUNTER_INC;
+    return (new_value & STATE_PENDING_DELETED)
+        && (new_value & STATE_DELETE_RQ_FROM_CB_THREAD)
+        && (new_value & STATE_USAGE_COUNTER_MASK) == 0
+        && (new_value & STATE_THREAD_COUNTER_MASK) == 0;
 }
 
 bool mu_interceptor_impl::subscription::mark_for_deletion_and_lock(
@@ -268,12 +278,12 @@ bool mu_interceptor_impl::subscription::mark_for_deletion_and_lock(
 
 bool mu_interceptor_impl::subscription::are_no_events_delivered(bool is_from_cb_handler_thread) noexcept {
     return
-        (m_state.load(std::memory_order_relaxed) & STATE_THREAD_COUNTER_MASK)
+        (m_state.load(std::memory_order_acquire) & STATE_THREAD_COUNTER_MASK)
         == (is_from_cb_handler_thread ? STATE_THREAD_COUNTER_INC : 0);
 }
 
 bool mu_interceptor_impl::subscription::unlock_marked_for_deletion() noexcept {
-    const auto state = m_state.fetch_sub(STATE_USAGE_COUNTER_INC, std::memory_order_relaxed);
+    const auto state = m_state.fetch_sub(STATE_USAGE_COUNTER_INC, std::memory_order_acq_rel);
 
     return (state & STATE_USAGE_COUNTER_MASK) == STATE_USAGE_COUNTER_INC
         && !(state & STATE_DELETE_RQ_FROM_CB_THREAD)
