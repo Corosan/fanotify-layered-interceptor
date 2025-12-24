@@ -3,6 +3,8 @@ project(fan-test)
 
 set(CMAKE_CXX_STANDARD 17)
 
+option(TSAN "use thread sanitizer during debug build instead of address sanitizer")
+
 add_subdirectory(3rd-party/googletest-main)
 
 add_library(fan-interceptor OBJECT
@@ -12,9 +14,10 @@ add_library(fan-interceptor OBJECT
     src/l2_cache.cpp
     src/utils.cpp)
 
+set(XSAN_OPTS $<$<CONFIG:DEBUG>:-fsanitize=$<IF:$<BOOL:${TSAN}>,thread,address>>)
 target_include_directories(fan-interceptor INTERFACE src)
-target_compile_options(fan-interceptor PRIVATE -Wall $<$<CONFIG:DEBUG>:-fsanitize=thread>)
-target_link_libraries(fan-interceptor PRIVATE $<$<CONFIG:DEBUG>:-fsanitize=thread>)
+target_compile_options(fan-interceptor PRIVATE -Wall ${XSAN_OPTS})
+target_link_libraries(fan-interceptor PRIVATE ${XSAN_OPTS})
 
 add_executable(iceptor-tester src/iceptor-tester.cpp)
 target_link_libraries(iceptor-tester fan-interceptor)
@@ -22,7 +25,7 @@ target_link_libraries(iceptor-tester fan-interceptor)
 enable_testing()
 add_executable(unit-tests test/basic-tests.cpp test/layer2.cpp test/cache.cpp)
 target_link_libraries(unit-tests GTest::gtest_main gmock fan-interceptor)
-target_compile_options(unit-tests PRIVATE -Wall $<$<CONFIG:DEBUG>:-fsanitize=thread>)
+target_compile_options(unit-tests PRIVATE -Wall ${XSAN_OPTS})
 
 include(GoogleTest)
 gtest_discover_tests(unit-tests)
