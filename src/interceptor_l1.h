@@ -127,7 +127,7 @@ public:
     void unregister_cb(cb_id_t);
 
     // Can be called from any number of threads - all of them assumed to process
-    // I/O separately. Returns false if the poller is disabled currenly. Re-throws any
+    // I/O separately. Returns false if the poller is disabled currently. Re-throws any
     // exception got from any callback.
     bool poll(void* ctx);
 

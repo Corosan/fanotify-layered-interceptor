@@ -324,7 +324,7 @@ reactor::reactor() {
 
     register_cb([this](void* ctx){
             char buf[128];
-            // Read much more than 1 byte becase more than one client could defer his routine
+            // Read much more than 1 byte because more than one client could defer his routine
             // and post interruption bytes into the pipe. But only one edge-triggered signal
             // will come
             std::ignore = ::read(m_defer_pipe_read_fd.handle(), &buf, sizeof(buf));
@@ -416,7 +416,7 @@ interceptor_l1_impl::~interceptor_l1_impl() {
             stop();
         } catch (...) {}
 
-    TRACE_L1_INFO() << "destroing";
+    TRACE_L1_INFO() << "destroying";
 }
 
 void interceptor_l1_impl::start() {
@@ -592,7 +592,7 @@ bool interceptor_l1_impl::remove_mnt_ns_monitor(::ino_t mnt_ns_id) {
             m_namespace_list_cv.notify_all();
         });
     } catch (...) {
-        // Paranoidal hanlding of failure to defer mount points de-registering with
+        // Paranoidal handling of failure to defer mount points de-registering with
         // update_mountinfo call later. The namespace will be unregistered but the
         // mount points from it still will be controlled by fanotify.
         m_pending_deleted_namespaces.erase(it);
@@ -869,7 +869,7 @@ void interceptor_l1_impl::flush_masks(mnt_namespace& ns_data, std::unordered_map
     //
     // Thanks to fanotify authors, let's flush and re-load all mount point masks on every change.
     // Even if we set unexpected mask for '/' instead of removed recently '/a/b/', it will be fixed
-    // in a moment when next mountinfo update is procesed.
+    // in a moment when next mountinfo update is processed.
 
     int res = ::fanotify_mark(ns_data.m_fan_fd.handle(), FAN_MARK_FLUSH | FAN_MARK_MOUNT,
         /*mask*/ 0, ns_data.m_root_fd.handle(), nullptr);

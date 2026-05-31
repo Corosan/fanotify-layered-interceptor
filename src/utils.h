@@ -424,7 +424,7 @@ I step_behind(I i, I e, typename std::iterator_traits<I>::value_type v) {
         ++i;
     if (i != e)
         return i;
-    throw std::out_of_range("iterator went out of range on stepping begind");
+    throw std::out_of_range("iterator went out of range on stepping behind");
 }
 
 struct empty_logger {
@@ -534,7 +534,7 @@ S& operator<<(S& os, dump_exc_with_nested<T> d) {
  * TODO: Spinlock or mutex? Torvalds says it's crap.
  *   https://www.realworldtech.com/forum/?threadid=189711&curpostid=189723
  *
- * A gay from habr.com says it could have more drawbacks than I can see:
+ * A guy from habr.com says it could have more drawbacks than I can see:
  *   https://habr.com/ru/articles/689310/
  */
 class spin_lock final {

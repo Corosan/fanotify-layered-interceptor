@@ -56,7 +56,7 @@ class l2_cache {
     };
 
     // A piece of data stored per file for each receiver (a subscriber in other words). Remember
-    // that different receivers can have different opition on the same file, thus having different
+    // that different receivers can have different opinions on the same file, thus having different
     // verdicts on particular event.
     struct receiver_entry_data {
         unsigned m_subscr_id;

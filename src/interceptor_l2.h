@@ -70,7 +70,7 @@ class mu_interceptor_impl : public mu_interceptor, interceptor_l1::l1_client {
             bool verdict_should_be_posted,
             std::optional<l2_cache::rce> r) noexcept;
 
-        // A bunch of these objects represending all related subscribers are stored in a vector by
+        // A bunch of these objects representing all related subscribers are stored in a vector by
         // value. Storing in a vector requires us to be able to copy (move) items being stored.
         // Default copy (move) constructor is deleted due to inability to copy atomic objects.
         // Though we don't plan to copy this object during active phase of event processing, but
@@ -262,7 +262,7 @@ class mu_interceptor_impl : public mu_interceptor, interceptor_l1::l1_client {
         std::uint32_t m_event_types;
 
         // For blocked (-perm) types strong count takes into account a subscriber which directly
-        // wants to receive blocked events. Weak count (or more preciselly a vector of weak refs)
+        // wants to receive blocked events. Weak count (or more precisely a vector of weak refs)
         // reflects a subscriber which wants to get non-blocking events assuming that a bloked-type
         // event subscriber also exists.
         // For unblocked event types which have a 'blocked type pair' m_weaks are populated with
@@ -418,7 +418,7 @@ class mu_interceptor_impl : public mu_interceptor, interceptor_l1::l1_client {
 
         // A mask and a counter for counting how many threads delivering events right now which are
         // linked to this subscription object. "Delivering" means calling user code via a callback.
-        // One event (or more preciselly - event view for the subscription) can be delivered in the
+        // One event (or more precisely - event view for the subscription) can be delivered in the
         // only thread, but a few different events can be processed by different threads.
         static constexpr unsigned STATE_THREAD_COUNTER_MASK         = 0x1F800000;
         static constexpr unsigned STATE_THREAD_COUNTER_INC          = 0x00800000;

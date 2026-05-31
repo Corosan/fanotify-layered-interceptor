@@ -319,7 +319,7 @@ mu_interceptor_impl::~mu_interceptor_impl() {
 void mu_interceptor_impl::subscribe(mu_subscriber& subscriber, const subscription_params& params) {
     auto requested_event_types = params.m_event_types;
 
-    // It's rediculous to ask to get both blocking and non-blocking events of the same type, for
+    // It's ridiculous to ask to get both blocking and non-blocking events of the same type, for
     // instance, [open] and [open_perm]. Let's clear non-blocking ones if blocking exist.
     if ((requested_event_types & ((std::uint32_t)fs_event_type::open | (std::uint32_t)fs_event_type::open_perm))
         == ((std::uint32_t)fs_event_type::open | (std::uint32_t)fs_event_type::open_perm))
