@@ -879,7 +879,8 @@ TEST(Layer2, RightSelectionOfMountpoints) {
     l1_c->on_mount(/*nsid*/ 152, /*dev_id*/ 1, /*mount_id*/ 12, "/dir1/sdir1", mask_setter.AsStdFunction());
     l1_c->on_mount(/*nsid*/ 152, /*dev_id*/ 1, /*mount_id*/ 13, "/dir1/sdir2", mask_setter.AsStdFunction());
     l1_c->on_mount(/*nsid*/ 152, /*dev_id*/ 1, /*mount_id*/ 14, "/dir1/sdir2/ssdir", mask_setter.AsStdFunction());
-    l1_c->on_mount(/*nsid*/ 152, /*dev_id*/ 1, /*mount_id*/ 15, "/dir2", mask_setter.AsStdFunction());
+    l1_c->on_mount(/*nsid*/ 152, /*dev_id*/ 1, /*mount_id*/ 15, "/dir1g", mask_setter.AsStdFunction());
+    l1_c->on_mount(/*nsid*/ 152, /*dev_id*/ 1, /*mount_id*/ 16, "/dir2", mask_setter.AsStdFunction());
     l1_c->mount_changes_done(/*nsid*/ 152, mask_setter.AsStdFunction(), false);
 
     EXPECT_CALL(*l1_m_ptr, request_update_masks(Eq(std::nullopt), _))

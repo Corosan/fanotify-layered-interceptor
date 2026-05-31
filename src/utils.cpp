@@ -117,7 +117,7 @@ num_conv_result to_number_ref(std::string_view str, T& val, int base,
     str.copy(buffer, str.size());
     buffer[str.size()] = '\0';
     long l_val = ::strtol(buffer, &eptr, base);
-    if (val == LONG_MIN || val == LONG_MAX)
+    if (l_val == LONG_MIN || l_val == LONG_MAX)
         return num_conv_result::overflow;
     if (eptr != buffer + str.size())
         return num_conv_result::garbage;
@@ -155,7 +155,7 @@ num_conv_result to_number_ref(std::string_view str, T& val, int base,
     str.copy(buffer, str.size());
     buffer[str.size()] = '\0';
     unsigned long l_val = ::strtoul(buffer, &eptr, base);
-    if (val == ULONG_MAX)
+    if (l_val == ULONG_MAX)
         return num_conv_result::overflow;
     if (eptr != buffer + str.size())
         return num_conv_result::garbage;

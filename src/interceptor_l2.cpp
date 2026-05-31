@@ -738,7 +738,7 @@ auto mu_interceptor_impl::get_interested_mounts(
         end = lst.end();
     else {
         std::string next_path_key = s.get_prefix_path();
-        ++next_path_key[next_path_key.size()-2];
+        ++next_path_key[next_path_key.size()-1];
         end = lower_bound(lst.begin(), lst.end(), next_path_key, mp_compare{});
     }
 

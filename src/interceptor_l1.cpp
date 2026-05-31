@@ -129,7 +129,11 @@ void poller::unregister_cb(cb_id_t id) {
     s.m_unregister_from_cb = s_executing_on_thread > 0;
     s.m_unregistered = true;
 
-    m_deleted_subscriptions.splice(m_deleted_subscriptions.end(), m_subscriptions, id);
+    {
+        std::unique_lock l{m_subscription_mutex};
+        m_deleted_subscriptions.splice(m_deleted_subscriptions.end(), m_subscriptions, id);
+    }
+
     s.m_cv.wait(l, [&s]{ return s.m_usages == (s.m_unregister_from_cb ? 1 : 0); });
 
     // If this method is called in context of a thread executing poll method,

@@ -229,7 +229,7 @@ public:
     void push_back(const T& v) {
         ensure_more_space();
         storage* s = m_is_internal ? m_data.m_int : m_data.m_ext.m_ptr;
-        new (s[m_len]->m_data) T(v);
+        new (s[m_len].m_data) T(v);
         ++m_len;
     }
 
@@ -356,7 +356,7 @@ private:
     void switch_to_internal() {
         storage* s = m_data.m_ext.m_ptr;
         for (size_type i = 0; i < m_len; ++i) {
-            T* from = std::launder(reinterpret_cast<T*>(s[i]->m_data));
+            T* from = std::launder(reinterpret_cast<T*>(s[i].m_data));
             new (m_data.m_int[i].m_data) T(std::move(*from));
             from->T::~T();
         }
