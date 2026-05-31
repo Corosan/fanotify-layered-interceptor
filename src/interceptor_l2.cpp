@@ -963,7 +963,7 @@ void mu_interceptor_impl::on_fs_event(void* ctx, l1_fs_event&& event) noexcept {
     bool delay_close_fd = false;
 
     try {
-        if (::fstat(event.m_fd.handle(), &current_fd_stat) < 0) {
+        if (::fstat(event.m_fd.handle(), &current_fd_stat) < 0) [[unlikely]] {
             auto e = errno;
             throw std::system_error(e, std::generic_category(),
                 "unable to get stat info for fd=" + std::to_string(event.m_fd.handle()));

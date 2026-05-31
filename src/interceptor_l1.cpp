@@ -939,7 +939,7 @@ void interceptor_l1_impl::read_fanotify(void* ctx, const mnt_namespace& ns_data)
     while (true) {
         if (pos >= items) {
             ssize_t res = ::read(ns_data.m_fan_fd.handle(), ev, sizeof(ev));
-            if (res < 0) {
+            if (res < 0) [[unlikely]] {
                 if (errno == EAGAIN)
                     break;
 
@@ -949,11 +949,11 @@ void interceptor_l1_impl::read_fanotify(void* ctx, const mnt_namespace& ns_data)
             // Current design assumes that there couldn't be partial reading though many threads are
             // reading from the same fd simultaneously. If this happens, the poller scheme should be
             // redesigned.
-            if ((size_t)res % sizeof(ev[0]) != 0)
+            if ((size_t)res % sizeof(ev[0]) != 0) [[unlikely]]
                 throw std::logic_error("partial reading from fanotify fd - read "
                     + std::to_string(res) + " bytes instead of " + std::to_string(sizeof(ev)));
 
-            if (res == 0)
+            if (res == 0) [[unlikely]]
                 throw std::logic_error("zero reading from fanotify fd");
 
             pos = 0;

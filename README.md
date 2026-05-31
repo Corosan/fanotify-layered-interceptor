@@ -24,3 +24,21 @@ client code is assumed to be behind `mu_subscriber` type.
 
 A trivial library tester is implemented in iceptor-tester.cpp file. Take a look on it as a sample of
 library usage. Most of the library methods are documented in place.
+
+# Notes about performance
+
+Typical fanotify usage scenario includes next steps involving kernel-space <-> user-space walking:
+
+1. waiting for an event by calling e.g. `epoll()`
+2. reading the event by calling `read()`
+3. reading a path to the FS object by calling `readlink()` (if you plan to implement at least trivial
+FS filtering)
+4. writing an answer for a permission check event by calling `write()`
+5. closing a file descriptor opened for us by Fanotify subsystem
+
+All these steps are not for free. They form a chain of time devourers participating in a sequence of
+actions the kernel must pass before allowing external process to make desired action on FS object
+in question. Except (5), precisely speaking. Thus even trivial opening a file on my machine
+increases roughly from 2us to 20us.
+
+![Sample flame graph of the interceptor](flame-sample.svg)
