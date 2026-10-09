@@ -41,7 +41,7 @@
 
 namespace fan_interceptor {
 
-thread_local int poller::s_executing_on_thread = 0;
+thread_local poller::subscription* poller::s_executing_on_thread = nullptr;
 
 poller::poller() {
     int fd = ::epoll_create1(EPOLL_CLOEXEC);
@@ -84,12 +84,29 @@ auto poller::register_cb(cb_t cb, int fd, std::uint32_t events) -> cb_id_t {
         // can happen only if some thread (A) detected armed fd, returned from epoll_wait in poll
         // method, then it was scheduled out, then thread (B) removed the subscription, then...
         // 10 seconds elapsed and the thread A returned back.
-        if (! m_deleted_subscriptions.empty() &&
-            std::chrono::steady_clock::now() - m_deleted_subscriptions.begin()->m_when_deleted
-                >= std::chrono::seconds(10)) {
-            tmp.splice(tmp.begin(), m_deleted_subscriptions, m_deleted_subscriptions.begin());
-            tmp.begin()->reinit(std::move(cb), fd);
-        } else {
+
+        const auto now = std::chrono::steady_clock::now();
+        for (auto it = m_deleted_subscriptions.begin(); it != m_deleted_subscriptions.end(); ++it) {
+            if (now - it->m_when_deleted < std::chrono::seconds(10))
+                break;
+
+            // As long as a subscription object can be placed into 'm_deleted_subscriptions' list
+            // before poll() method finishes with him, it's needed to check m_usages counter also.
+            // Else give up with this candidate and check another or just create the new
+            // subscription below.
+            {
+                std::lock_guard sl{it->m_mutex};
+                if (it->m_usages != 0 || !it->m_released)
+                    continue;
+
+                it->reinit(std::move(cb), fd);
+            }
+
+            tmp.splice(tmp.begin(), m_deleted_subscriptions, it);
+            break;
+        }
+
+        if (tmp.empty()) {
             l.unlock();
             tmp.emplace_back(std::move(cb), fd);
             l.lock();
@@ -126,11 +143,12 @@ void poller::unregister_cb(cb_id_t id) {
     }
 
     std::unique_lock l{s.m_mutex};
-    s.m_unregister_from_cb = s_executing_on_thread > 0;
+    s.m_unregister_from_cb = (s_executing_on_thread == &s);
     s.m_unregistered = true;
 
     {
-        std::unique_lock l{m_subscription_mutex};
+        std::lock_guard l{m_subscription_mutex};
+        s.m_when_deleted = std::chrono::steady_clock::now();
         m_deleted_subscriptions.splice(m_deleted_subscriptions.end(), m_subscriptions, id);
     }
 
@@ -140,10 +158,10 @@ void poller::unregister_cb(cb_id_t id) {
     // the callback can hold a reference to an object which in turn called this method.
     // Resetting the callback right now can yield to dangling reference - let's poller's
     // cycle will do it for us later.
-    if (! s.m_unregister_from_cb)
+    if (! s.m_unregister_from_cb) {
         s.m_cb = {};
-
-    s.m_when_deleted = std::chrono::steady_clock::now();
+        s.m_released = true;
+    }
 }
 
 void poller::enable(bool enab) {
@@ -212,7 +230,7 @@ bool poller::poll(void* ctx) {
 
         std::exception_ptr exc;
 
-        ++s_executing_on_thread;
+        s_executing_on_thread = &s;
 
         try {
             s.m_cb(ctx);
@@ -220,15 +238,18 @@ bool poller::poll(void* ctx) {
             exc = std::current_exception();
         }
 
-        --s_executing_on_thread;
+        s_executing_on_thread = nullptr;
 
         {
             std::lock_guard l{s.m_mutex};
-            if (--s.m_usages == (s.m_unregister_from_cb ? 1 : 0)) {
+
+            if (--s.m_usages == (s.m_unregister_from_cb ? 1 : 0))
                 s.m_cv.notify_all();
-            }
-            if (s.m_usages == 0 && s.m_unregister_from_cb)
+
+            if (s.m_usages == 0 && s.m_unregister_from_cb) {
                 s.m_cb = {};
+                s.m_released = true;
+            }
         }
 
         if (exc)
@@ -238,7 +259,7 @@ bool poller::poll(void* ctx) {
     return true;
 }
 
-thread_local int deferred_dispatcher::s_executing_on_thread = 0;
+thread_local deferred_dispatcher::state* deferred_dispatcher::s_executing_on_thread = nullptr;
 
 auto deferred_dispatcher::defer(cb_t cb) -> cb_id_t {
     auto st = new state;
@@ -259,7 +280,7 @@ void deferred_dispatcher::cancel(cb_id_t id) {
         return;
     }
 
-    id->m_cancelled_from_cb = s_executing_on_thread > 0;
+    id->m_cancelled_from_cb = (s_executing_on_thread == &*id);
 
     if (! id->m_cancelled_from_cb) {
         id->m_cv.wait(l, [&id]{ return ! id->m_executing; });
@@ -289,7 +310,7 @@ void deferred_dispatcher::dispatch(void* ctx) {
                 sptr->m_executing = true;
             }
 
-            ++s_executing_on_thread;
+            s_executing_on_thread = &*sptr;
 
             try {
                 sptr->m_cb(ctx);
@@ -299,7 +320,7 @@ void deferred_dispatcher::dispatch(void* ctx) {
                 // some time ago
             }
 
-            --s_executing_on_thread;
+            s_executing_on_thread = nullptr;
 
             {
                 std::unique_lock l2{sptr->m_mutex};
@@ -587,12 +608,17 @@ bool interceptor_l1_impl::remove_mnt_ns_monitor(::ino_t mnt_ns_id) {
     m_reactor.unregister_cb(ns_data.m_fan_cb_id);
 
     try {
-        m_reactor.defer([this, &ns_data, it](void*){
+        m_reactor.defer([this, &ns_data, mnt_ns_id](void*){
             // ns_data is held by "m_pending_deleted_namespaces" container and can has gone only
             // as the result of executing {erase} operation 2 lines below.
             update_mountinfo(ns_data, /*remove_all*/ true);
             std::lock_guard l{m_pending_deleted_namespace_list_mutex};
-            m_pending_deleted_namespaces.erase(it);
+            const auto r = m_pending_deleted_namespaces.equal_range(mnt_ns_id);
+            for (auto it = r.first; it != r.second; ++it)
+                if (std::addressof(it->second) == std::addressof(ns_data)) {
+                    m_pending_deleted_namespaces.erase(it);
+                    break;
+                }
             m_namespace_list_cv.notify_all();
         });
     } catch (...) {
@@ -968,6 +994,8 @@ void interceptor_l1_impl::read_fanotify(void* ctx, const mnt_namespace& ns_data)
             }
             if (ev[pos].fd != FAN_NOFD)
                 ::close(ev[pos].fd);
+
+            ++pos;
             continue;
         }
 

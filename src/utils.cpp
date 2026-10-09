@@ -252,6 +252,7 @@ auto polling_timer_executor::execute(std::function<time_point_t()> now_provider)
                         it = m_items.insert(it, std::move(prev_task));
                         it->m_when = new_tp_for_repeat;
                         it->m_executing = false;
+                        m_items[pos - 1].m_id = s_invalid_id;
                     }
                 }
             }

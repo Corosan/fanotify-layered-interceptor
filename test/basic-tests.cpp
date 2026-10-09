@@ -9,6 +9,9 @@
 #include <gtest/gtest.h>
 #include <gmock/gmock.h>
 
+#include <sys/epoll.h>
+#include <fcntl.h>
+
 namespace {
 
 using namespace fan_interceptor;
@@ -120,6 +123,75 @@ TEST(Utils, StringSplitter) {
     EXPECT_TRUE(string_splitter("  ", " \t").empty());
     EXPECT_THAT(string_splitter("a,; b ", ",;"), GenSequence(std::vector{"a", " b "}));
     EXPECT_THAT(string_splitter(",a,; b ;", ",;"), GenSequence(std::vector{"a", " b "}));
+}
+
+TEST(PollerSuite, ReusedSubscriptionAfterUnregisterFromCb) {
+    poller plr;
+    int pipe1_fds[2], pipe2_fds[2];
+
+    ASSERT_EQ(pipe2(pipe1_fds, O_NONBLOCK), 0);
+    ASSERT_EQ(pipe2(pipe2_fds, O_NONBLOCK), 0);
+
+    poller::cb_id_t id1;
+
+    id1 = plr.register_cb(
+        [&](void*) {
+            char c;
+            (void)read(pipe1_fds[0], &c, 1);
+            plr.unregister_cb(id1);
+        },
+        pipe1_fds[0],
+        EPOLLIN);
+
+    (void)write(pipe1_fds[1], "x", 1);
+
+    // cb unregisters itself (from-cb path)
+    ASSERT_TRUE(plr.poll(nullptr));
+
+    int calls = 0;
+    plr.register_cb(
+        [&](void*) {
+            char c;
+            (void)read(pipe2_fds[0], &c, 1);
+            ++calls;
+        },
+        pipe2_fds[0],
+        EPOLLIN);
+
+    (void)write(pipe2_fds[1], "x", 1);
+
+    ASSERT_TRUE(plr.poll(nullptr));
+    EXPECT_EQ(calls, 1);
+
+    (void)write(pipe2_fds[1], "y", 1);
+
+    ASSERT_TRUE(plr.poll(nullptr));
+    EXPECT_EQ(calls, 2) << "second callback invocation lost: reused subscription was dropped";
+}
+
+TEST(PollerSuite, UnregisterOtherFromCb) {
+    poller plr;
+    int pipe1_fds[2], pipe2_fds[2];
+
+    ASSERT_EQ(pipe2(pipe1_fds, O_NONBLOCK), 0);
+    ASSERT_EQ(pipe2(pipe2_fds, O_NONBLOCK), 0);
+
+    auto idB = plr.register_cb([](void*){}, pipe2_fds[0], EPOLLIN);
+
+    plr.register_cb(
+        [&](void*) {
+            char c;
+            (void)read(pipe1_fds[0], &c, 1);
+            plr.unregister_cb(idB);
+        },
+        pipe1_fds[0],
+        EPOLLIN);
+
+    (void)write(pipe1_fds[1], "x", 1);
+
+    alarm(3);
+    plr.poll(nullptr);
+    alarm(0);
 }
 
 TEST(DeferredDispatcher, BasicAssertions) {

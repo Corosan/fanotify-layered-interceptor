@@ -72,7 +72,6 @@ public:
 
     explicit operator bool() const noexcept { return m_fd >= 0; }
     bool empty() const noexcept { return m_fd < 0; }
-    int release() noexcept { int t = m_fd; m_fd = -1; return t; }
     void reset(int fd) noexcept { close(); m_fd = fd; }
     void close() noexcept;
 
@@ -119,7 +118,6 @@ public:
 
     explicit operator bool() const noexcept { return m_cb; }
     bool empty() const noexcept { return ! m_cb; }
-    int release() noexcept;
     void reset(int fd) { fd_shared_holder tmp(fd); swap(tmp); }
     void close() noexcept;
 

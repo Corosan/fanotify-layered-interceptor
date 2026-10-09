@@ -170,7 +170,6 @@ private:
 
 const l2_params g_common_l2_params{{}, /*delay_fd*/ false, /*print stat*/ false};
 
-
 TEST(Layer2, StartStopEmptyProcessEvents) {
     using namespace ::testing;
 
@@ -910,6 +909,56 @@ TEST(Layer2, RightSelectionOfMountpoints) {
     l1_c->thread_finishing(thread_ctx);
 }
 
+TEST(Layer2, UnsubscribeFromCallbackTrivial) {
+    using namespace ::testing;
+
+    void* tctx = nullptr;
+    l1_mock* l1_m_ptr = nullptr;
+    interceptor_l1::l1_client* l1_c = nullptr;
+    auto l1_m = std::make_unique<StrictMock<l1_mock>>(&l1_m_ptr);
+    StrictMock<MockFunction<interceptor_l1::l1_client::mask_setter_t>> mask_setter;
+    StrictMock<subscriber_mock> subscr;
+
+    EXPECT_CALL(*l1_m_ptr, set_client).WillOnce(SaveArg<0>(&l1_c));
+    EXPECT_CALL(*l1_m_ptr, start).WillOnce([&]{ l1_c->thread_started(&tctx); });
+    EXPECT_CALL(*l1_m_ptr, stop).WillOnce([&]{ l1_c->thread_finishing(tctx); });
+
+    EXPECT_CALL(*l1_m_ptr, request_update_masks(Eq(std::nullopt), _))
+        .WillRepeatedly([&](auto opt_mnt_id, void* ctx){
+            l1_c->update_masks(152, ctx, mask_setter.AsStdFunction());
+            l1_c->update_masks_done(ctx);
+        });
+
+    mu_interceptor_impl iceptor{
+        g_common_l2_params,
+        std::move(l1_m),
+        std::make_unique<StrictMock<trivial_timer_mock>>()};
+
+    iceptor.start();
+
+    l1_c->on_mount(/*nsid*/ 152, /*dev_id*/ 1, /*mount_id*/ 10, "/", mask_setter.AsStdFunction());
+    l1_c->mount_changes_done(/*nsid*/ 152, mask_setter.AsStdFunction(), false);
+
+    EXPECT_CALL(mask_setter, Call(10, (std::uint32_t)fs_event_type::open));
+    EXPECT_CALL(mask_setter, Call(10, 0));
+
+    iceptor.subscribe(subscr, {(std::uint32_t)fs_event_type::open});
+
+    EXPECT_CALL(subscr, on_fs_event(_)).WillOnce([&](auto){
+            iceptor.unsubscribe(subscr);
+        });
+
+    l1_c->on_fs_event(tctx, l1_fs_event{(std::uint32_t)fs_event_type::open,
+        fd_holder{::open("/proc/self/exe", O_RDONLY)}, 1, 152, 1});
+
+    // The next found mount shouldn't influence on a mask setter because no subscriptions exist
+    // for now
+    l1_c->on_mount(/*nsid*/ 152, /*dev_id*/ 1, /*mount_id*/ 11, "/new", mask_setter.AsStdFunction());
+    l1_c->mount_changes_done(/*nsid*/ 152, mask_setter.AsStdFunction(), false);
+
+    iceptor.stop();
+}
+
 TEST(Layer2, UnsubscribeFromCallback) {
     using namespace ::testing;
 
@@ -1475,6 +1524,67 @@ TEST(Layer2, StressSubscribe) {
     iceptor.stop();
 
     EXPECT_GE(called_times, 100);
+}
+
+TEST(Layer2, CachedDeny) {
+    using namespace ::testing;
+
+    void* tctx = nullptr;
+    l1_mock* l1_m_ptr = nullptr;
+    interceptor_l1::l1_client* l1_c = nullptr;
+    auto l1_m = std::make_unique<StrictMock<l1_mock>>(&l1_m_ptr);
+    interceptor_l1::l1_client::mask_setter_t mask_setter = [](auto...){};
+
+    EXPECT_CALL(*l1_m_ptr, set_client).WillOnce(SaveArg<0>(&l1_c));
+    EXPECT_CALL(*l1_m_ptr, start).WillOnce([&]{ l1_c->thread_started(&tctx); });
+    EXPECT_CALL(*l1_m_ptr, stop).WillOnce([&]{ l1_c->thread_finishing(tctx); });
+
+    mu_interceptor_impl iceptor{
+        g_common_l2_params,
+        std::move(l1_m),
+        std::make_unique<StrictMock<trivial_timer_mock>>()};
+
+    iceptor.start();
+
+    l1_c->on_mount(/*nsid*/ 152, /*dev_id*/ 1, /*mount_id*/ 10, "/", mask_setter);
+    l1_c->mount_changes_done(/*nsid*/ 152, mask_setter, false);
+
+    StrictMock<subscriber_mock> av, plain;
+
+    EXPECT_CALL(*l1_m_ptr, request_update_masks(Eq(std::nullopt), _))
+        .WillRepeatedly([l1_c, &mask_setter](auto opt_mnt_id, void* ctx){
+            l1_c->update_masks(152, ctx, mask_setter);
+            l1_c->update_masks_done(ctx);
+        });
+
+    iceptor.subscribe(av, {(std::uint32_t)fs_event_type::open_perm, "/", /*cache_enabled*/ true});
+    iceptor.subscribe(plain, {(std::uint32_t)fs_event_type::open, "/", /*cache_enabled*/ false});
+
+    {
+        InSequence seq;
+
+        EXPECT_CALL(*l1_m_ptr, post_verdict(_, _, verdict::allow)).Times(1);
+        EXPECT_CALL(*l1_m_ptr, post_verdict(_, _, verdict::deny)).Times(2);
+    }
+
+    {
+        InSequence seq;
+
+        EXPECT_CALL(av, on_fs_event(_)).WillOnce(Throw(1));
+        EXPECT_CALL(av, on_fs_event(_)).WillOnce([](auto p){
+                p->post_verdict(verdict::deny, /*cache*/ true);
+            });
+    }
+
+    EXPECT_CALL(plain, on_fs_event(_)).Times(3);
+
+    for (unsigned i = 0; i < 3; ++i)
+        l1_c->on_fs_event(tctx, l1_fs_event{(std::uint32_t)fs_event_type::open_perm,
+            fd_holder{::open("/proc/self/exe", O_RDONLY)}, 1, 152, i});
+
+    iceptor.unsubscribe(av);
+    iceptor.unsubscribe(plain);
+    iceptor.stop();
 }
 
 } // ns anonymous

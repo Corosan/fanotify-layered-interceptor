@@ -32,7 +32,7 @@
 #include <unistd.h>
 
 #define TRACE_L2_INFO() TRACE_INFO() << "interceptor_l2(" << (void*)this << ") "
-#define TRACE_L2_ERROR() TRACE_INFO() << "interceptor_l2(" << (void*)this << ") "
+#define TRACE_L2_ERROR() TRACE_ERROR() << "interceptor_l2(" << (void*)this << ") "
 
 namespace fan_interceptor {
 
@@ -159,7 +159,7 @@ auto mu_interceptor_impl::fs_event_impl::activate_receivers() -> receiver_unlock
 }
 
 void mu_interceptor_impl::fs_event_impl::post_verdict(verdict v, rcv_key) {
-    join_verdict(v);
+    add_verdict(v);
 
     if (m_wait_for_verdict_count.fetch_sub(1, std::memory_order_acq_rel) == 1 && m_fd) {
         if (m_interceptor.m_mount_ns_unique_id_gen.load(std::memory_order_relaxed)
@@ -186,9 +186,15 @@ void mu_interceptor_impl::fs_event_impl::release() noexcept {
         m_receivers.clear();
         m_fd.close();
         m_last_used = std::chrono::steady_clock::now();
+
+        auto& interceptor = m_interceptor;
+        const bool in_nh = m_is_in_nursing_home.load(std::memory_order_relaxed);
+
+        // After this statement the current object can be deleted
         m_ref.store(0, std::memory_order_release);
-        if (m_is_in_nursing_home.load(std::memory_order_relaxed))
-            m_interceptor.purge_nursing_home();
+
+        if (in_nh)
+            interceptor.purge_nursing_home();
     }
 }
 
@@ -268,10 +274,9 @@ bool mu_interceptor_impl::subscription::mark_for_deletion_and_lock(
         new_state = state | STATE_PENDING_DELETED;
         new_state += STATE_USAGE_COUNTER_INC;
         if ((state & STATE_THREAD_COUNTER_MASK)
-            != (is_from_cb_handler_thread ? STATE_THREAD_COUNTER_INC : 0)) {
+            != (is_from_cb_handler_thread ? STATE_THREAD_COUNTER_INC : 0))
             new_state |= STATE_NEED_NOTIFY;
-            new_state |= is_from_cb_handler_thread ? STATE_DELETE_RQ_FROM_CB_THREAD : 0;
-        }
+        new_state |= is_from_cb_handler_thread ? STATE_DELETE_RQ_FROM_CB_THREAD : 0;
     } while (! m_state.compare_exchange_weak(state, new_state, std::memory_order_relaxed));
     return true;
 }
@@ -313,6 +318,11 @@ mu_interceptor_impl::mu_interceptor_impl(
 }
 
 mu_interceptor_impl::~mu_interceptor_impl() {
+    if (m_print_stat_task_id) {
+        m_service_timer->cancel_task(m_print_stat_task_id);
+        m_print_stat_task_id = 0;
+    }
+
     TRACE_L2_INFO() << "destroying";
 }
 
@@ -395,8 +405,14 @@ void mu_interceptor_impl::subscribe(mu_subscriber& subscriber, const subscriptio
             }
 
             auto& s = m_subscriptions.back();
+
+            auto ns_mount_state_it = m_mountpoints.find(namespace_id);
+            if (ns_mount_state_it == m_mountpoints.end())
+                return;  // Either deferred reading of mountpoints hasn't happened yet, or the
+                         // namespace contains no mountpoints
+
             // No need to lock namespace mutex because the whole mount list is unique locked
-            auto& mounts = m_mountpoints.find(namespace_id)->second.m_mounts;
+            auto& mounts = ns_mount_state_it->second.m_mounts;
             auto& interested_mounts =
                 s.m_bind_mountpoints[namespace_id] = get_interested_mounts(s, mounts);
 
@@ -437,7 +453,7 @@ bool mu_interceptor_impl::unsubscribe(mu_subscriber& subscriber) {
         std::shared_lock subscr_lock{m_subscription_mutex};
 
         subscr_it = find_if(m_subscriptions.begin(), m_subscriptions.end(),
-            [&subscriber](auto& v){ return v.is_same_client(subscriber); });
+            [&subscriber](auto& v){ return v.is_same_client(subscriber) && !v.is_pending_deleted(); });
         if (subscr_it == m_subscriptions.end())
             return false;
 
@@ -596,9 +612,12 @@ void mu_interceptor_impl::on_umount(::ino_t namespace_id, ::dev_t dev_id, int mo
             std::lock_guard l{mounts_it->second.m_mutex};
             auto& mounts = mounts_it->second.m_mounts;
 
-            if (auto it = lower_bound(mounts.begin(), mounts.end(), mountpoint_path_str, mp_compare{});
-                it != mounts.end() && (*it)->m_mountpoint_path == mountpoint_path_str)
-                mounts.erase(it);
+            auto r = equal_range(mounts.begin(), mounts.end(), mountpoint_path_str, mp_compare{});
+            for (auto it = r.first; it != r.second; ++it)
+                if ((*it)->m_mount_id == mount_id) {
+                    mounts.erase(it);
+                    break;
+                }
 
             // Actually this method doesn't know whether the namespace has gone totally or just a
             // few (possibly all) mounts disappeared in the namespace. Instead of removing
@@ -662,7 +681,11 @@ void mu_interceptor_impl::mount_changes_done(::ino_t namespace_id,
     auto* mounts = &mounts_it->second.m_mounts;
 
     for (auto& s : m_subscriptions) {
+        if (s.is_pending_deleted())
+            continue;
+
         std::lock_guard l{s.m_mutex};
+
         auto& old_interested_mounts = s.m_bind_mountpoints[namespace_id];
         auto new_interested_mounts = get_interested_mounts(s, *mounts);
         std::vector<mountpoint_ptr_t> res;
@@ -1000,7 +1023,6 @@ void mu_interceptor_impl::on_fs_event(void* ctx, l1_fs_event&& event) noexcept {
             l2_event->m_path.assign(thread_ctx->m_current_fd_path);
             l2_event->m_pid = event.m_pid;
             l2_event->m_mnt_ns_id = event.m_mnt_ns_id;
-            // l2_event->m_mount_id = mnt_id;
             l2_event->m_mount_ns_unique_id = mnt_ns_unique_id;
             l2_event->m_mount_ns_id_ver = mnt_ns_unique_id_latest;
             l2_event->m_fd_for_permission_event = event.m_fd.handle();
@@ -1036,7 +1058,7 @@ void mu_interceptor_impl::on_fs_event(void* ctx, l1_fs_event&& event) noexcept {
                     if (cache_rec_entry) {
                         verdict v;
                         if (need_to_post_verdict && cache_rec_entry->is_verdict_ready(v)) {
-                            l2_event->join_verdict(v);
+                            l2_event->add_verdict(v);
                             continue;
                         }
 
@@ -1055,47 +1077,43 @@ void mu_interceptor_impl::on_fs_event(void* ctx, l1_fs_event&& event) noexcept {
                 rec_unlocker = l2_event->activate_receivers();
             }
 
-            // Short-cut for the case when all verdicts have got from a cache so no receivers
-            // created
-            if (l2_event->get_receivers().empty()
+            // Assume that only one permission type event can come in a set of events told by the
+            // level 1. Thus, if there are no event receivers expected to post verdicts, than the
+            // resulting verdict can be posted to the layer 1 right now.
+            if (l2_event->can_verdict_be_posted_now()
                 && ((std::uint32_t)ev_type & (std::uint32_t)fs_event_type::perm_events)) {
                 verdict_will_be_posted = true;
                 m_layer1->post_verdict(event.m_mnt_ns_id, event.m_fd.handle(), l2_event->get_verdict());
-                continue;
             }
 
-            // Need to duplicate the file descriptor holder if this not the last event type to
-            // deliver (to process)...
-/*
-            if (event.m_event_types)
-                l2_event->m_fd = event.m_fd;
-            else {
-                // last cycle of incoming event processing...
-                if (delay_close_fd)
-                    add_fd_to_delayed_close(event.m_fd);
-                l2_event->m_fd = std::move(event.m_fd);
-            }
-*/
-
-            l2_event->m_fd = event.m_fd;
-
-            if (l2_event->will_verdict_be_posted())
+            // If a verdict can't be posted now it means that there is some receiver which must post
+            // a verdict later.
+            if (! l2_event->can_verdict_be_posted_now())
                 verdict_will_be_posted = true;
+
+            // Copy the main file descriptor wrapper (FS object this event is saying about) to the
+            // event object. Note that this trivial copy operation may become too heavy if
+            // fd_shared_holder type will be replaced with fd_dup_holder. We will end up with one
+            // more system call in this case.
+            l2_event->m_fd = event.m_fd;
 
             for (auto& [receiver, ptr] : l2_event->get_receivers()) {
                 bool need_to_finalize = false;
 
-                try {
-                    if (ptr)
+                // ptr can be empty for a receiver associated with partially destroyed
+                // subscription
+                if (ptr) [[likely]] {
+                    try {
                         receiver.call_client(std::move(ptr), need_to_finalize);
-                } catch (const std::exception& e) {
-                    TRACE_L2_ERROR() << "catched unexpected exception on calling subscriber '"
-                        << receiver.client_name() << "' for event id=" << event.m_event_id
-                        << ", type " << ev_type << ": " << utils::dump_exc_with_nested(e);
-                } catch (...) {
-                    TRACE_L2_ERROR() << "catched unexpected exception on calling subscriber '"
-                        << receiver.client_name() << "' for event id=" << event.m_event_id
-                        << ", type " << ev_type;
+                    } catch (const std::exception& e) {
+                        TRACE_L2_ERROR() << "catched unexpected exception on calling subscriber '"
+                            << receiver.client_name() << "' for event id=" << event.m_event_id
+                            << ", type " << ev_type << ": " << utils::dump_exc_with_nested(e);
+                    } catch (...) {
+                        TRACE_L2_ERROR() << "catched unexpected exception on calling subscriber '"
+                            << receiver.client_name() << "' for event id=" << event.m_event_id
+                            << ", type " << ev_type;
+                    }
                 }
 
                 if (need_to_finalize)
@@ -1118,6 +1136,8 @@ void mu_interceptor_impl::on_fs_event(void* ctx, l1_fs_event&& event) noexcept {
             << event.m_event_id << ": " << utils::dump_exc_with_nested(e);
     }
 
+    // The statement is a guard against unexpected exceptions above - we must not block a system in
+    // a worst case.
     if ((orig_event_types & (std::uint32_t)fs_event_type::perm_events)
         && ! verdict_will_be_posted
         && event.m_fd)

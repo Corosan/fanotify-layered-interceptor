@@ -189,16 +189,26 @@ public:
 
     small_vector(const small_vector& r) {
         if (r.size() <= fixed_size) {
-            for (size_type i = 0; i < r.size(); ++i)
-                new(m_data.m_int[i].m_data) T(r[i]);
+            size_type i = 0;
+            try {
+                for (; i < r.size(); ++i)
+                    new(m_data.m_int[i].m_data) T(r[i]);
+            } catch (...) {
+                for (size_type i2 = 0; i2 < i; ++i2)
+                    std::launder(reinterpret_cast<T*>(m_data.m_int[i2].m_data))->T::~T();
+                throw;
+            }
         } else {
             m_is_internal = false;
             m_data.m_ext.m_capacity = r.size();
             m_data.m_ext.m_ptr = new storage[r.size()];
+            size_type i = 0;
             try {
-                for (size_type i = 0; i < r.size(); ++i)
+                for (; i < r.size(); ++i)
                     new(m_data.m_ext.m_ptr[i].m_data) T(r[i]);
             } catch (...) {
+                for (size_type i2 = 0; i2 < i; ++i2)
+                    std::launder(reinterpret_cast<T*>(m_data.m_ext.m_ptr[i2].m_data))->T::~T();
                 delete[] m_data.m_ext.m_ptr;
                 throw;
             }
@@ -610,12 +620,13 @@ private:
         bool m_executed = false;
     };
 
+    static constexpr int s_invalid_id = 0;
     const cb_t m_replan_cb;
 
     std::mutex m_items_mutex;
     std::condition_variable m_executing_cv;
     std::deque<work_item> m_items;
-    int m_id_gen = 1;
+    int m_id_gen = s_invalid_id + 1;
     bool m_current_task_cancelling = false;
 };
 

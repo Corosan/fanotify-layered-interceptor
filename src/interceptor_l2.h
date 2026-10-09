@@ -143,8 +143,8 @@ class mu_interceptor_impl : public mu_interceptor, interceptor_l1::l1_client {
         // needed soon - this vector is a good place for storing them here too instead of creating
         // temporary vectors each time.
         receiver_and_ptr_list_t m_receivers;
-
         verdict m_final_verdict;
+
     public:
         class receiver_unlocker final {
             fs_event_impl* m_parent = nullptr;
@@ -189,7 +189,6 @@ class mu_interceptor_impl : public mu_interceptor, interceptor_l1::l1_client {
         ::pid_t m_pid;
         ::ino_t m_mnt_ns_id;
 
-        // int m_mount_id;
         unsigned m_mount_ns_unique_id;
 
         // Latest version of changes of the interceptor's m_mountpoints container at the
@@ -211,11 +210,17 @@ class mu_interceptor_impl : public mu_interceptor, interceptor_l1::l1_client {
         }
 
         void init_verdict() noexcept { m_final_verdict = verdict::allow; }
-        void join_verdict(verdict v) noexcept {
+
+        void add_verdict(verdict v) noexcept {
             if (v == verdict::deny)
                 m_final_verdict = v;
         }
+
         verdict get_verdict() const noexcept { return m_final_verdict; }
+
+        bool can_verdict_be_posted_now() const noexcept {
+            return m_wait_for_verdict_count.load(std::memory_order_relaxed) == 0;
+        }
 
         auto get_last_used_time() const noexcept { return m_last_used; }
 
@@ -228,10 +233,6 @@ class mu_interceptor_impl : public mu_interceptor, interceptor_l1::l1_client {
         }
 
         void release() noexcept;
-
-        bool will_verdict_be_posted() const noexcept {
-            return m_wait_for_verdict_count.load(std::memory_order_relaxed);
-        }
 
         void post_verdict(verdict v, rcv_key);
 
@@ -450,6 +451,10 @@ class mu_interceptor_impl : public mu_interceptor, interceptor_l1::l1_client {
 
         bool operator()(const mountpoint_ptr_t& p1, std::string_view p2) const {
             return p1->m_mountpoint_path < p2;
+        }
+
+        bool operator()(std::string_view p1, const mountpoint_ptr_t& p2) const {
+            return p1 < p2->m_mountpoint_path;
         }
     };
 

@@ -89,7 +89,7 @@ private:
         short m_usages = 0;
         bool m_unregistered = false;
         bool m_unregister_from_cb = false;
-
+        bool m_released = false;
         std::chrono::time_point<std::chrono::steady_clock> m_when_deleted;
 
         std::mutex m_mutex;
@@ -103,6 +103,8 @@ private:
             m_cb = std::move(cb);
             m_fd = fd;
             m_unregistered = false;
+            m_unregister_from_cb = false;
+            m_released = false;
         }
     };
 
@@ -144,7 +146,7 @@ private:
     subscription_list_t m_subscriptions;
     subscription_list_t m_deleted_subscriptions;
 
-    static thread_local int s_executing_on_thread;
+    static thread_local subscription* s_executing_on_thread;
 };
 
 class deferred_dispatcher {
@@ -170,6 +172,10 @@ private:
 
         state* operator->() const noexcept {
             return m_state;
+        }
+
+        state& operator*() const noexcept {
+            return *m_state;
         }
 
     public:
@@ -220,7 +226,7 @@ public:
     // Cancel execution of previously added callable by specified id. Does nothing if the
     // callable was executed already. Waits for it completion in case if it executes
     // currently (except the case if this method is called in context of any thread
-    // calling a dispatch method).
+    // calling a dispatch method). It's prohibited to cancel the same ID more than once.
     void cancel(cb_id_t);
 
     bool has_gone(cb_id_t) const;
@@ -231,7 +237,7 @@ private:
     std::mutex m_task_list_mutex;
     std::deque<state_ptr> m_tasks;
 
-    static thread_local int s_executing_on_thread;
+    static thread_local state* s_executing_on_thread;
 };
 
 class reactor : poller, deferred_dispatcher {

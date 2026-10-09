@@ -62,15 +62,9 @@ fd_shared_holder::fd_shared_holder(const fd_shared_holder& r) noexcept
         m_cb->m_ref.fetch_add(1, std::memory_order_relaxed);
 }
 
-int fd_shared_holder::release() noexcept {
-    int t = m_cb ? m_cb->m_fd : -1;
-    m_cb = nullptr;
-    return t;
-}
-
 void fd_shared_holder::close() noexcept {
     if (m_cb) {
-        if (m_cb->m_ref.fetch_sub(1, std::memory_order_relaxed) == 1) {
+        if (m_cb->m_ref.fetch_sub(1, std::memory_acquire_release) == 1) {
             ::close(m_cb->m_fd);
             delete m_cb;
         }
