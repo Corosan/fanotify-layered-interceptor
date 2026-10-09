@@ -609,7 +609,7 @@ bool interceptor_l1_impl::remove_mnt_ns_monitor(::ino_t mnt_ns_id) {
 
     try {
         m_reactor.defer([this, &ns_data, mnt_ns_id](void*){
-            // ns_data is held by "m_pending_deleted_namespaces" container and can has gone only
+            // ns_data is held by "m_pending_deleted_namespaces" container and can gone only
             // as the result of executing {erase} operation 2 lines below.
             update_mountinfo(ns_data, /*remove_all*/ true);
             std::lock_guard l{m_pending_deleted_namespace_list_mutex};
@@ -622,7 +622,7 @@ bool interceptor_l1_impl::remove_mnt_ns_monitor(::ino_t mnt_ns_id) {
             m_namespace_list_cv.notify_all();
         });
     } catch (...) {
-        // Paranoidal handling of failure to defer mount points de-registering with
+        // Paranoid handling of failure to defer mount points de-registering with
         // update_mountinfo call later. The namespace will be unregistered but the
         // mount points from it still will be controlled by fanotify.
         m_pending_deleted_namespaces.erase(it);
@@ -634,7 +634,7 @@ bool interceptor_l1_impl::remove_mnt_ns_monitor(::ino_t mnt_ns_id) {
 }
 
 void interceptor_l1_impl::request_update_masks_async(::ino_t mnt_ns_id, void* ctx) {
-    // Take unique lock instead of shared one only due to working with m_ask_client_cb_ids array.
+    // Take a unique lock instead of shared one only due to working with m_ask_client_cb_ids array.
     // Another solution could be to introduce another mutex for protecting the array. Think it
     // should be good enough because actual work will be done in deferred statement after this lock
     // released.

@@ -76,7 +76,7 @@ class mu_interceptor_impl : public mu_interceptor, interceptor_l1::l1_client {
         // Though we don't plan to copy this object during active phase of event processing, but
         // only during building a list of these event views for particular event. At this phase the
         // object can be considered as a carcass. Let's allow to move carcasses (moving should be
-        // enough for std::vector requirements and produce beter code for the vector, though we
+        // enough for std::vector requirements and produce better code for the vector, though we
         // understand that we not move anything here, just copy bytes).
         fs_event_for_subscription_impl(fs_event_for_subscription_impl&& r) noexcept;
 
@@ -264,10 +264,10 @@ class mu_interceptor_impl : public mu_interceptor, interceptor_l1::l1_client {
 
         // For blocked (-perm) types strong count takes into account a subscriber which directly
         // wants to receive blocked events. Weak count (or more precisely a vector of weak refs)
-        // reflects a subscriber which wants to get non-blocking events assuming that a bloked-type
+        // reflects a subscriber which wants to get non-blocking events assuming that a blocked-type
         // event subscriber also exists.
         // For unblocked event types which have a 'blocked type pair' m_weaks are populated with
-        // with all non-blocking subscribers until at least one blocked subscriber found.
+        // all non-blocking subscribers until at least one blocked subscriber found.
         struct counters {
             unsigned m_strong_counter;
             std::vector<subscription*> m_weaks;
@@ -288,7 +288,7 @@ class mu_interceptor_impl : public mu_interceptor, interceptor_l1::l1_client {
         }
     };
 
-    // mountpoint_state items are sorded lexicographically by their mount point paths. See comment
+    // mountpoint_state items are sorted lexicographically by their mount point paths. See comment
     // for mp_compare below. The list can be accessed under shared lock from a few threads each
     // of which can work with different namespaces. Personal mount list mutex must be taken in this
     // case.

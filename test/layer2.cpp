@@ -524,9 +524,9 @@ TEST(Layer2, SubscribeUnblockingBeforeStart) {
 //
 // Later another mount point [m-d] '/boot/vg1/dev1' comes:
 // [s-b] is additionally interested in [m-d]
-// [s-c] is additionally interesed in [m-d]
+// [s-c] is additionally interested in [m-d]
 //
-// Later [m-d] disappears. [s-b] and [s-c] become not interesed in it
+// Later [m-d] disappears. [s-b] and [s-c] become not interested in it
 // Later [m-c] disappears. [s-c] leaves it. [s-b] leaves it also and also returns to
 // observing [m-b].
 TEST(Layer2, SubscribeUnblockingAfterStart) {
@@ -623,7 +623,7 @@ TEST(Layer2, SubscribeUnblockingAfterStart) {
     // Later another mount point [m-d] '/boot/vg1/dev1' comes:
     //
     // [s-b] is additionally interested in [m-d]
-    // [s-c] is additionally interesed in [m-d]
+    // [s-c] is additionally interested in [m-d]
     EXPECT_CALL(mask_setter, Call(13, (std::uint32_t)fs_event_type::modify));
     l1_c->on_mount(/*nsid*/ 152, /*dev_id*/ 1, /*mount_id*/ 13, "/boot/vg1/dev1", mask_setter.AsStdFunction());
     l1_c->mount_changes_done(/*nsid*/ 152, mask_setter.AsStdFunction(), false);
@@ -645,7 +645,7 @@ TEST(Layer2, SubscribeUnblockingAfterStart) {
         152,
         1000});
 
-    // Later [m-d] disappears. [s-b] and [s-c] become not interesed in it
+    // Later [m-d] disappears. [s-b] and [s-c] become not interested in it
     // Later [m-c] disappears. [s-c] leaves it. [s-b] leaves it also and also returns to
     // observing [m-b].
     EXPECT_CALL(mask_setter, Call(13, 0));

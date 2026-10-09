@@ -168,7 +168,7 @@ void mu_interceptor_impl::fs_event_impl::post_verdict(verdict v, rcv_key) {
             // namespace this event is related to could disappear and the mount namespace ID is now
             // obsolete. This statement re-checks that mount namespace unique ID is still the same
             // as it was when the event was initialized.
-            // TODO: it can be overdesign here - how a mount namespace can disapper while we still
+            // TODO: it can be overdesign here - how a mount namespace can disappear while we still
             // have an ongoing event being handled thus effectively blocking some user process
             // (belonging to the mount namespace) on FS action.
             std::shared_lock l{m_interceptor.m_mountpoint_mutex};
@@ -634,7 +634,7 @@ void mu_interceptor_impl::on_umount(::ino_t namespace_id, ::dev_t dev_id, int mo
         std::unique_lock l2{m_disk_last_mp_change_mutex};
         // No need to get the next unique mount ID but the same generator is used as logical clock
         // for any mount point changes. As long as a mount point picture for particular disk device
-        // changed, it's 'last change ver' numbeer should be updated.
+        // changed, it's 'last change ver' number should be updated.
         m_disk_last_mp_changes[dev_id] = m_mount_unique_id_gen.fetch_add(1, std::memory_order_relaxed);
     }
 /*
@@ -1106,11 +1106,11 @@ void mu_interceptor_impl::on_fs_event(void* ctx, l1_fs_event&& event) noexcept {
                     try {
                         receiver.call_client(std::move(ptr), need_to_finalize);
                     } catch (const std::exception& e) {
-                        TRACE_L2_ERROR() << "catched unexpected exception on calling subscriber '"
+                        TRACE_L2_ERROR() << "caught unexpected exception on calling subscriber '"
                             << receiver.client_name() << "' for event id=" << event.m_event_id
                             << ", type " << ev_type << ": " << utils::dump_exc_with_nested(e);
                     } catch (...) {
-                        TRACE_L2_ERROR() << "catched unexpected exception on calling subscriber '"
+                        TRACE_L2_ERROR() << "caught unexpected exception on calling subscriber '"
                             << receiver.client_name() << "' for event id=" << event.m_event_id
                             << ", type " << ev_type;
                     }
@@ -1131,8 +1131,8 @@ void mu_interceptor_impl::on_fs_event(void* ctx, l1_fs_event&& event) noexcept {
         thread_ctx->event_failed();
         // This exception catcher is intended for internal errors like insufficient resources
         // or violation of invariants in this code. Any exceptions happened in subscription
-        // clients are catched in the catcher above.
-        TRACE_L2_ERROR() << "catched unexpected exception during handing an event id="
+        // clients are caught in the catcher above.
+        TRACE_L2_ERROR() << "caught unexpected exception during handling an event id="
             << event.m_event_id << ": " << utils::dump_exc_with_nested(e);
     }
 

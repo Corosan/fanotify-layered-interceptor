@@ -112,7 +112,7 @@ public:
     // Get file cache entry wrapper for a file object on a disk. Assume that each file object is
     // uniquely identified by device ID, i-node ID and the object creation time. Also assume that
     // the cache entry should be considered obsolete if a mount point picture of the device has been
-    // changed (controversal statement - a file object could be changed through a mount point which
+    // changed (controversial statement - a file object could be changed through a mount point which
     // is not observed by the interceptor - the cache entry should become obsolete in this case
     // also). As long as particular i-nodes can be reused if one file object is deleted (unlinked)
     // and new one is created, creation time also helps to judge whether it's the original file

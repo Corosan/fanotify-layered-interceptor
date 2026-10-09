@@ -3,7 +3,7 @@
 # Layered fanotify interceptor
 
 Fanotify subsystem is a Linux kernel module providing events to user-space from filesystem activity
-like opening, accesing, modifying and closing files. Some of the events are permissive synchronous
+like opening, accessing, modifying and closing files. Some of the events are permissive synchronous
 ones requiring that fanotify user-space client must directly answer on the event with allow / deny
 verdict.
 

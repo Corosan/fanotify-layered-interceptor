@@ -204,7 +204,7 @@ auto l2_cache::rce::prepare_for_work() -> action_flags_t {
             if (it == entry_ptr->m_receiver_entries.end() || it->m_subscr_id != m_subscr_id)
                 it = entry_ptr->m_receiver_entries.insert(it, {m_subscr_id});
         } catch (const std::bad_alloc&) {
-            // In case of insufficient memory just silently skip the unablility to create either
+            // In case of insufficient memory just silently skip the unability to create either
             // the file cache entry or the particular receiver/subscriber cache entry
         }
     }

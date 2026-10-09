@@ -64,7 +64,7 @@ fd_shared_holder::fd_shared_holder(const fd_shared_holder& r) noexcept
 
 void fd_shared_holder::close() noexcept {
     if (m_cb) {
-        if (m_cb->m_ref.fetch_sub(1, std::memory_acquire_release) == 1) {
+        if (m_cb->m_ref.fetch_sub(1, std::memory_order_acq_rel) == 1) {
             ::close(m_cb->m_fd);
             delete m_cb;
         }

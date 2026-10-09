@@ -75,7 +75,7 @@ public:
     void reset(int fd) noexcept { close(); m_fd = fd; }
     void close() noexcept;
 
-    // Yes, return internal fd value by this unconvenient method, not by operator int(),
+    // Yes, return internal fd value by this inconvenient method, not by operator int(),
     // else we end up with bugs like "close(my_fd_holder)" which shouldn't compile!
     int handle() const noexcept { return m_fd; }
 
@@ -280,7 +280,7 @@ S& operator<<(S& os, fs_event_type v) {
 enum class verdict : std::uint8_t { allow, deny };
 
 // Event issued by interceptor layer 1. One event per one fanotify reading, the only receiver of the
-// event is layer 2. Can contain a few event types if fanoify subsystem decided to glue them. m_fd
+// event is layer 2. Can contain a few event types if fanotify subsystem decided to glue them. m_fd
 // is a file descriptor opened by a kernel for our process.
 struct l1_fs_event {
     std::uint32_t m_event_types;
@@ -350,7 +350,7 @@ struct interceptor_l1 {
     virtual ~interceptor_l1() = default;
 
     // A client should be set before any other operation on the interceptor. The client
-    // can set set only once at the beginning.
+    // can set only once at the beginning.
     virtual void set_client(l1_client*) = 0;
     virtual void start() = 0;
     virtual void stop() = 0;
@@ -404,7 +404,7 @@ typedef intrusive_ptr<fs_event> fs_event_ptr;
 struct mu_subscriber {
     // Called when some interesting filesystem event happened. The subscriber can hold the event
     // pointer as long as it needs so (but assuming that it consumes resources). If the subscriber
-    // was adoped for any synchronous (blocking) event, it must post a verdict for the event via the
+    // was adopted for any synchronous (blocking) event, it must post a verdict for the event via the
     // event's method ('allow' is assumed if it forgot).
     virtual void on_fs_event(fs_event_ptr) = 0;
     virtual std::string_view name() = 0;
@@ -428,7 +428,7 @@ struct mu_interceptor {
     // Stop all functionality but do not unsubscribe already adopted clients
     virtual void stop() = 0;
 
-    // Adopt provided subscriber as a receiver of futher filesystem events in according with
+    // Adopt provided subscriber as a receiver of further filesystem events in accordance with
     // parameters provided. The subscriber can receive first events in an arbitrary thread even
     // before this method returns (if the interceptor has been started already).
     virtual void subscribe(mu_subscriber& subscriber, const subscription_params& params) = 0;
