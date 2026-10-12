@@ -309,21 +309,24 @@ mu_interceptor_impl::mu_interceptor_impl(
         std::unique_ptr<interceptor_l1> layer1,
         std::shared_ptr<utils::trivial_timer> service_timer)
     : m_params(params)
-    , m_service_timer(std::move(service_timer))
     , m_l2_cache(m_params.m_delay_fd_on_close)
-    , m_layer1(std::move(layer1)) {
+    , m_layer1(std::move(layer1))
+    , m_service_timer(std::move(service_timer)) {
     m_layer1->set_client(this);
 
     TRACE_L2_INFO() << "created";
 }
 
 mu_interceptor_impl::~mu_interceptor_impl() {
-    if (m_print_stat_task_id) {
-        m_service_timer->cancel_task(m_print_stat_task_id);
-        m_print_stat_task_id = 0;
+    if (m_started)
+        try {
+            stop();
+        } catch(...) {
+            TRACE_L2_ERROR() << "stop(): unexpected exception caught";
+        }
+    else {
+        TRACE_L2_INFO() << "destroying";
     }
-
-    TRACE_L2_INFO() << "destroying";
 }
 
 void mu_interceptor_impl::subscribe(mu_subscriber& subscriber, const subscription_params& params) {
@@ -1224,6 +1227,8 @@ void mu_interceptor_impl::start() {
             [this](){ dump_stat(); }, std::chrono::seconds(5));
 
     m_layer1->start();
+
+    m_started = true;
 }
 
 void mu_interceptor_impl::stop() {
@@ -1247,7 +1252,10 @@ void mu_interceptor_impl::stop() {
         std::unique_lock l{m_fds_to_close_mutex};
         m_fds_to_close.clear();
         m_free_fds_to_close.clear();
+        m_closing_task_id = 0;
     }
+
+    m_started = false;
 }
 
 void mu_interceptor_impl::dump_stat() {

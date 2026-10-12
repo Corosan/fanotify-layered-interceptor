@@ -95,6 +95,7 @@ private:
 };
 
 class trivial_timer_mock : public trivial_timer {
+public:
     MOCK_METHOD(int, post_single_shot_task, (cb_t, time_point_t), (override));
     MOCK_METHOD(int, post_repeat_task, (cb_t, time_point_t::duration), (override));
     MOCK_METHOD(void, cancel_task, (int), (override));
@@ -356,10 +357,14 @@ TEST(Layer2, MultipleStartStopWithSubscriptions) {
         152,
         1000});
 
-    // Instead of proper stopping the interceptor we just signal that one (and the only) thread
-    // has been finished. It should be enough for clearing resources because all other needed
-    // cleanup actions the interceptor must do itself.
-    l1_c->thread_finishing(thread_ctx);
+    EXPECT_CALL(mask_setter, Call(10, 0));
+    EXPECT_CALL(*l1_m_ptr, stop).WillOnce([&l1_c, &thread_ctx, &mask_setter]{
+            l1_c->on_umount(/*nsid*/ 152, /*dev_id*/ 1, /*mount_id*/ 10, "/", mask_setter.AsStdFunction());
+            l1_c->mount_changes_done(/*nsid*/ 152, mask_setter.AsStdFunction(), true);
+            l1_c->thread_finishing(thread_ctx);
+    });
+
+    // The latest expectations above are driven by the iceptor being deleted
 }
 
 // Subscribe to one unblocking event type by one subscriber before starting
@@ -903,10 +908,9 @@ TEST(Layer2, RightSelectionOfMountpoints) {
     iceptor.subscribe(subscr3, {(std::uint32_t)fs_event_type::close, "/dir1/sdir2/ggg"});
     iceptor.subscribe(subscr4, {(std::uint32_t)fs_event_type::access, "/dir1/sdir2/ssdir"});
 
-    // Instead of proper stopping the interceptor we just signal that one (and the only) thread
-    // has been finished. It should be enough for clearing resources because all other needed
-    // cleanup actions the interceptor must do itself.
-    l1_c->thread_finishing(thread_ctx);
+    EXPECT_CALL(*l1_m_ptr, stop).WillOnce([&l1_c, &thread_ctx]{ l1_c->thread_finishing(thread_ctx); });
+
+    // The latest expectation above are driven by the iceptor being deleted
 }
 
 TEST(Layer2, UnsubscribeFromCallbackTrivial) {
@@ -1584,6 +1588,85 @@ TEST(Layer2, CachedDeny) {
 
     iceptor.unsubscribe(av);
     iceptor.unsubscribe(plain);
+    iceptor.stop();
+}
+
+// The id of the delayed fd closing task must be reset on stopping the interceptor. Otherwise, after
+// a restart, a new portion of fds to close would never be served by the service timer because the
+// stale task id left after the previous stop would be treated as an alive pending task.
+TEST(Layer2, DelayedFdCloseTaskReplannedAfterRestart) {
+    using namespace ::testing;
+
+    void* tctx = nullptr;
+    l1_mock* l1_m_ptr = nullptr;
+    interceptor_l1::l1_client* l1_c = nullptr;
+    auto l1_m = std::make_unique<StrictMock<l1_mock>>(&l1_m_ptr);
+    interceptor_l1::l1_client::mask_setter_t mask_setter = [](auto...){};
+
+    StrictMock<subscriber_mock> av;
+
+    auto timer = std::make_unique<StrictMock<trivial_timer_mock>>();
+    auto* timer_ptr = timer.get();
+
+    EXPECT_CALL(*l1_m_ptr, set_client).WillOnce(SaveArg<0>(&l1_c));
+    EXPECT_CALL(*l1_m_ptr, start).WillRepeatedly([&]{ l1_c->thread_started(&tctx); });
+    EXPECT_CALL(*l1_m_ptr, stop).WillRepeatedly([&]{ l1_c->thread_finishing(tctx); });
+
+    // The 'close' events drive the cache and the delayed fd closing machinery only when
+    // the feature is turned on
+    const l2_params params{{}, /*delay_fd*/ true, /*print stat*/ false};
+
+    mu_interceptor_impl iceptor{params, std::move(l1_m), std::move(timer)};
+
+    {
+        InSequence seq;
+
+        // An fd of the file known to the cache goes into the delayed close list - a single
+        // shot service task must be planned
+        EXPECT_CALL(*timer_ptr, post_single_shot_task(_, _)).WillOnce(Return(1));
+        // The task must be cancelled on stopping
+        EXPECT_CALL(*timer_ptr, cancel_task(1));
+        // The same must happen for the next incarnation of the interceptor
+        EXPECT_CALL(*timer_ptr, post_single_shot_task(_, _)).WillOnce(Return(2));
+        EXPECT_CALL(*timer_ptr, cancel_task(2));
+    }
+
+    iceptor.start();
+
+    l1_c->on_mount(/*nsid*/ 152, /*dev_id*/ 1, /*mount_id*/ 10, "/", mask_setter);
+    l1_c->mount_changes_done(/*nsid*/ 152, mask_setter, false);
+
+    EXPECT_CALL(*l1_m_ptr, request_update_masks(Eq(std::nullopt), _))
+        .WillRepeatedly([l1_c, &mask_setter](auto opt_mnt_id, void* ctx){
+            l1_c->update_masks(152, ctx, mask_setter);
+            l1_c->update_masks_done(ctx);
+        });
+
+    iceptor.subscribe(av, {(std::uint32_t)fs_event_type::open_perm, "/", /*cache_enabled*/ true});
+
+    // Remember the file in the cache by posting a verdict with caching it
+    EXPECT_CALL(av, on_fs_event(_)).WillOnce([](auto p){
+            p->post_verdict(verdict::allow, /*cache*/ true);
+        });
+    EXPECT_CALL(*l1_m_ptr, post_verdict(_, _, verdict::allow));
+
+    l1_c->on_fs_event(tctx, l1_fs_event{(std::uint32_t)fs_event_type::open_perm,
+        fd_holder{::open("/proc/self/exe", O_RDONLY)}, 1, 152, 0});
+
+    // The 'close' event on the file known to the cache makes the fd going into the delayed
+    // close list. The subscriber doesn't see the event at all - the cache serves it on its own
+    l1_c->on_fs_event(tctx, l1_fs_event{(std::uint32_t)fs_event_type::close,
+        fd_holder{::open("/proc/self/exe", O_RDONLY)}, 1, 152, 1});
+
+    iceptor.stop();
+
+    // Restart the interceptor - the subscription and the cache survive it
+    iceptor.start();
+
+    // Once again the delayed close must be served by a new single shot task
+    l1_c->on_fs_event(tctx, l1_fs_event{(std::uint32_t)fs_event_type::close,
+        fd_holder{::open("/proc/self/exe", O_RDONLY)}, 1, 152, 2});
+
     iceptor.stop();
 }
 

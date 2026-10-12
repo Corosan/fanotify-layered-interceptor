@@ -526,8 +526,6 @@ private:
     std::list<std::pair<std::chrono::steady_clock::time_point, fd_holder>> m_fds_to_close;
     int m_closing_task_id = 0;
 
-    std::shared_ptr<utils::trivial_timer> m_service_timer;
-
     std::mutex m_thread_context_mutex;
     std::vector<thread_context*> m_all_thread_contexts;
 
@@ -538,6 +536,9 @@ private:
     // It's better to remove the layer 1 holder before any other data of this class - that's why
     // it's placed after mounts' and subscriptions' containers located above.
     std::unique_ptr<interceptor_l1> m_layer1;
+
+    std::shared_ptr<utils::trivial_timer> m_service_timer;
+    bool m_started = false;
 
     // Implementation of interceptor_l1::l1_client interface
     //

@@ -436,12 +436,15 @@ interceptor_l1_impl::interceptor_l1_impl(
 }
 
 interceptor_l1_impl::~interceptor_l1_impl() {
-    if (m_started)
+    if (m_started) {
         try {
             stop();
-        } catch (...) {}
-
-    TRACE_L1_INFO() << "destroying";
+        } catch (...) {
+            TRACE_L1_ERROR() << "stop(): unexpected exception caught";
+        }
+    } else {
+        TRACE_L1_INFO() << "destroying";
+    }
 }
 
 void interceptor_l1_impl::start() {
